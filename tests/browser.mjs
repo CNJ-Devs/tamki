@@ -40,25 +40,22 @@ async function launch() {
   await shell.locator(".tab-select").waitFor();
   return shell;
 }
+async function waitForPage(predicate) {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const target = app.context().pages().find(predicate);
+    if (target) return target;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("Timed out waiting for Chromium browsing target to attach");
+}
 try {
   let shell = await launch();
   await shell.locator("#address").fill(base + "/one");
   await shell.locator("#address").press("Enter");
-  await shell.waitForTimeout(120);
-  let remote = null;
-  // The initial blank browsing target may predate the listener.
-  remote =
-    app
-      .context()
-      .pages()
-      .find((p) => p.url().startsWith(base)) || remote;
-  if (!remote) {
-    await shell.waitForTimeout(200);
-    remote = app
-      .context()
-      .pages()
-      .find((p) => p !== shell);
-  }
+  let remote = await waitForPage(
+    (p) => p !== shell && p.url().startsWith(base),
+  );
   await remote.waitForURL(base + "/one");
   await remote.getByRole("heading", { name: "One", exact: true }).waitFor();
   assert.deepEqual(
@@ -89,15 +86,14 @@ try {
   });
   assert.equal(geometry.views.at(-1).x, 64);
   assert.equal(geometry.views.at(-1).width, geometry.width - 72);
+  const previousTargets = new Set(app.context().pages());
   await remote.getByRole("button", { name: "Open tab" }).click();
   await shell.waitForFunction(
     () => document.querySelectorAll(".tab-select").length === 2,
   );
-  const current = app
-    .context()
-    .pages()
-    .filter((p) => p.url() === base + "/two")
-    .at(-1);
+  const current = await waitForPage(
+    (p) => !previousTargets.has(p) && p.url() === base + "/two",
+  );
   await current.getByRole("heading", { name: "Two", exact: true }).waitFor();
   await shell.locator("#address").fill("file:///etc/passwd");
   await shell.locator("#address").press("Enter");
@@ -154,11 +150,7 @@ try {
   shell = await launch();
   await shell.locator("#address").fill(base + "/one");
   await shell.locator("#address").press("Enter");
-  await shell.waitForTimeout(350);
-  remote = app
-    .context()
-    .pages()
-    .find((p) => p.url().startsWith(base));
+  remote = await waitForPage((p) => p !== shell && p.url().startsWith(base));
   await remote.waitForURL(base + "/one");
   assert.match(
     await remote.evaluate(() => document.cookie),
