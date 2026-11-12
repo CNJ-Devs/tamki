@@ -47,7 +47,7 @@ npm run test:browser
 npm run package
 ```
 
-The browser integration test starts an isolated local HTTP fixture and uses a temporary profile. It does not use your real website accounts. Packaging writes an unsigned development bundle for the current platform to `packages/`; it is not a signed or notarized installer.
+The browser integration test starts an isolated local HTTP fixture and uses a temporary profile. It does not use your real website accounts. Packaging writes a development bundle for the current platform to `packages/`; it has no Developer ID signing or Apple notarization.
 
 Validated locally on macOS Apple Silicon. Windows and Linux source paths are present, but native runtime behavior has not yet been validated there.
 

@@ -47,7 +47,7 @@ npm run test:browser
 npm run package
 ```
 
-浏览器集成测试使用本地 HTTP 测试页面和临时浏览器配置，不使用真实网站账号。打包命令在 `packages/` 下生成当前平台的未签名开发包，不是签名或公证后的安装程序。
+浏览器集成测试使用本地 HTTP 测试页面和临时浏览器配置，不使用真实网站账号。打包命令在 `packages/` 下生成当前平台的开发包，没有 Developer ID 签名或 Apple 公证。
 
 本地在 macOS Apple Silicon 上验证。源码保留 Windows 和 Linux 的运行路径，但尚未完成这两个系统的原生运行验证。
 
