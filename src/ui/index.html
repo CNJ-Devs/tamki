@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-src 'none'"
+    />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Tamki</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <aside>
+      <div class="brand">
+        <span class="mark" aria-hidden="true"></span><b>Tamki</b>
+      </div>
+      <button id="collapse" aria-label="Collapse sidebar">☰</button>
+      <nav>
+        <button data-page="browser" class="active">
+          <svg class="icon" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="9" />
+            <ellipse cx="12" cy="12" rx="4" ry="9" />
+            <path d="M3 12h18" /></svg
+          ><span data-i18n="browser">Browser</span></button
+        ><button data-page="library">
+          <svg class="icon" viewBox="0 0 24 24">
+            <rect x="3" y="4" width="5" height="16" rx="1" />
+            <path d="M12 4v16m4-15 5 14" /></svg
+          ><span data-i18n="library">Library</span></button
+        ><button data-page="tasks">
+          <svg class="icon" viewBox="0 0 24 24">
+            <path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4" /></svg
+          ><span data-i18n="tasks">Tasks</span>
+        </button>
+      </nav>
+      <button class="settings" data-page="settings">
+        <svg class="icon" viewBox="0 0 24 24">
+          <path
+            d="m9 3-1 3-3 1-2 4 2 3v4l4 2 3-1 3 1 4-2v-4l2-3-2-4-3-1-1-3Z"
+          />
+          <circle cx="12" cy="12" r="3" /></svg
+        ><span data-i18n="settings">Settings</span>
+      </button>
+    </aside>
+    <main>
+      <div id="browser">
+        <div class="tabs" id="tabs"></div>
+        <form id="navigation">
+          <button type="button" id="back" aria-label="Back">←</button
+          ><button type="button" id="forward" aria-label="Forward">→</button
+          ><button type="button" id="reload" aria-label="Reload">↻</button
+          ><input
+            id="address"
+            aria-label="Address or search"
+            placeholder="Search or enter address"
+            autocomplete="off"
+            spellcheck="false"
+          /><button type="submit" aria-label="Go">↵</button>
+        </form>
+        <div class="home">
+          <img src="assets/mark.png" alt="Tamki chipmunk" />
+          <h1>Tamki</h1>
+          <p data-i18n="home">Search or enter an address to start browsing.</p>
+          <div class="shortcuts">
+            <button data-url="https://www.bilibili.com">Bilibili ↗</button
+            ><button data-url="https://github.com/CNJ-Devs/tamki">
+              GitHub ↗
+            </button>
+          </div>
+        </div>
+        <div id="error" role="status"></div>
+      </div>
+      <section id="other" hidden></section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>
