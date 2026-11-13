@@ -396,6 +396,22 @@ h3 {
   isolation: isolate;
   gap: 0;
 }
+.app-shell[data-platform="darwin"] .tabstrip {
+  app-region: drag;
+  user-select: none;
+}
+.window-controls-space {
+  flex: 0 0 80px;
+  height: 100%;
+}
+.app-shell[data-platform="darwin"] .tabstrip button,
+.app-shell[data-platform="darwin"] .web-tabs {
+  app-region: no-drag;
+}
+.app-shell[data-platform="darwin"] .tabstrip-space {
+  min-width: 40px;
+  height: 100%;
+}
 .home-tab {
   position: relative;
   display: grid;
@@ -459,6 +475,7 @@ h3 {
 }
 .web-tab.selected:before,
 .web-tab.selected:after,
+.app-shell[data-platform="darwin"] .home-tab.selected:before,
 .home-tab.selected:after {
   content: "";
   position: absolute;
@@ -467,7 +484,8 @@ h3 {
   height: 8px;
   pointer-events: none;
 }
-.web-tab.selected:before {
+.web-tab.selected:before,
+.app-shell[data-platform="darwin"] .home-tab.selected:before {
   left: -8px;
   background: radial-gradient(
     circle at 0 0,
@@ -646,6 +664,9 @@ h3 {
 }
 .content.home-active {
   border-top-left-radius: 0;
+}
+.app-shell[data-platform="darwin"] .content.home-active {
+  border-top-left-radius: 10px;
 }
 .home-content,
 .page {

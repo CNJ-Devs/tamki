@@ -12,7 +12,7 @@ Tamki is a desktop Chromium browser and a video library across user-selected sto
 
 Uses Electron 45.3.1, Chromium, TypeScript, React, shadcn/Radix, Phosphor Regular icons and SQLite.
 
-- Compact browser tabs with a pinned Home/library tab; settings and tasks are secondary pages.
+- Compact browser tabs with a pinned Home/library tab; on macOS, tabs share a row with native window controls. Settings and tasks are secondary pages.
 - Real HTTP(S) browsing, navigation history, website popups in tabs and isolated persistent website sessions.
 - Local storage connections with multiple native-selected folders. Scans include videos directly in each root and its immediate child directories.
 - SQLite indexing, explicit/background refresh, partial-failure retention and persistent scan exclusions. Removing library entries never deletes their files; explicit manual addition can restore them.

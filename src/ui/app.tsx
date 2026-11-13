@@ -127,7 +127,8 @@ function Shell({ state }: { state: LibraryState }) {
         32,
         Math.min(
           202,
-          (el.clientWidth - 100) / Math.max(1, browser.tabs.length),
+          (el.clientWidth - (window.tamki.platform === "darwin" ? 220 : 100)) /
+            Math.max(1, browser.tabs.length),
         ),
       );
       setTabWidth(width);
@@ -158,6 +159,7 @@ function Shell({ state }: { state: LibraryState }) {
   return (
     <div
       className="app-shell"
+      data-platform={window.tamki.platform}
       onPointerDown={(event) => {
         if (
           browser.pickerOpen &&
@@ -167,6 +169,9 @@ function Shell({ state }: { state: LibraryState }) {
       }}
     >
       <div className="tabstrip" ref={strip}>
+        {window.tamki.platform === "darwin" && (
+          <div className="window-controls-space" aria-hidden="true" />
+        )}
         <button
           className={cn("home-tab", browser.active === 0 && "selected")}
           aria-label={t("home")}

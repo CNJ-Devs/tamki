@@ -94,6 +94,7 @@ export interface TabPickerState {
   preferences: Preferences;
 }
 export interface TamkiBridge {
+  readonly platform: string;
   action(type: string, value?: unknown): Promise<BrowserState>;
   library<T = LibraryState>(type: string, value?: unknown): Promise<T>;
   onState(callback: (state: BrowserState) => void): () => void;

@@ -342,6 +342,12 @@ app
     });
     window = new BaseWindow({
       title: "Tamki",
+      ...(process.platform === "darwin"
+        ? {
+            titleBarStyle: "hidden" as const,
+            trafficLightPosition: { x: 14, y: 15 },
+          }
+        : {}),
       width: 1280,
       height: 860,
       minWidth: 640,

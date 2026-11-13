@@ -5,6 +5,7 @@ const subscribe = (channel: string, callback: (value: unknown) => void) => {
   return () => ipcRenderer.removeListener(channel, listener);
 };
 contextBridge.exposeInMainWorld("tamki", {
+  platform: process.platform,
   action: (type: string, value?: unknown) =>
     ipcRenderer.invoke("browser:action", { type, value }),
   library: async (type: string, value?: unknown) => {
