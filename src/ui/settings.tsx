@@ -10,6 +10,8 @@ import {
 import { RadioGroup, RadioGroupItem } from "./components/ui/radio-group";
 import { Checkbox } from "./components/ui/checkbox";
 import { Connections } from "./connections";
+import { SavePreferences } from "./save-preferences";
+import { RecognitionSettings } from "./recognition-settings";
 import { useI18n, errorMessage } from "./i18n";
 import themes from "./themes.json";
 import { toast } from "sonner";
@@ -106,6 +108,18 @@ export function Settings({
             <Connections connections={state.connections} />
           </section>
           <section>
+            <h2>{t("downloads")}</h2>
+            <SavePreferences
+              settings={state.settings}
+              connections={state.connections}
+            />
+          </section>
+          <section>
+            <h2>{t("recognition")}</h2>
+            <RecognitionSettings config={state.settings.recognition} />
+          </section>
+          <section>
+            <h2>{t("library")}</h2>
             <Field orientation="horizontal">
               <Checkbox
                 id="refresh-on-open"

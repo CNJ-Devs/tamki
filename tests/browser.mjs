@@ -12,6 +12,8 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
+import { checkConnections } from "./connections.mjs";
+import { checkSettings } from "./settings.mjs";
 const temporary = await mkdtemp(path.join(tmpdir(), "tamki-browser-"));
 const profile = path.join(temporary, "profile");
 await mkdir(profile);
@@ -26,6 +28,26 @@ for (const target of [
   await cp("tests/fixtures/video.webm", path.join(media, target));
 await writeFile(path.join(media, "empty.mp4"), "");
 const server = createServer((req, res) => {
+  if (req.url === "/v1/models") {
+    res.setHeader("Content-Type", "application/json");
+    if (req.headers.authorization !== "Bearer tamki-model-secret-fixture") {
+      res.writeHead(401);
+      res.end(JSON.stringify({ error: "Unauthorized" }));
+      return;
+    }
+    res.end(
+      JSON.stringify({
+        data: [
+          {
+            id: "fixture-text",
+            display_name: "Fixture text model",
+            max_output_tokens: 8192,
+          },
+        ],
+      }),
+    );
+    return;
+  }
   if (req.url === "/download") {
     res.writeHead(200, {
       "Content-Type": "application/octet-stream",
@@ -211,6 +233,7 @@ try {
   await shell.getByRole("button", { name: "Home", exact: true }).click();
   await shell.getByRole("button", { name: "Settings", exact: true }).click();
   await shell.screenshot({ path: "test-results/settings.png" });
+  await checkConnections(app, shell, temporary);
   await app.evaluate(({ dialog }, root) => {
     dialog.showOpenDialog = async () => ({
       canceled: false,
@@ -240,6 +263,7 @@ try {
     2,
   );
   assert(!snapshot.works.some((w) => w.title.includes("Hidden")));
+  await checkSettings(app, shell, base, profile);
   await shell.getByRole("button", { name: "Back", exact: true }).click();
   await shell.locator(".poster img").first().waitFor();
   await shell.screenshot({ path: "test-results/library.png" });
@@ -423,6 +447,15 @@ try {
   await launch();
   snapshot = await state();
   assert.equal(snapshot.preferences.palette, "iris");
+  assert.equal(snapshot.settings.recognition.parser, "anitopy");
+  assert.match(snapshot.settings.recognition.aiPrompt, /Fixture preference/);
+  assert.equal(
+    snapshot.settings.recognition.defaultSourceId,
+    snapshot.settings.recognition.sources[0].id,
+  );
+  assert.equal(snapshot.settings.recognition.sources[0].model, "fixture-text");
+  assert.equal(snapshot.settings.downloads.series.mode, "fixed");
+  assert.match(snapshot.settings.downloads.series.fixed.path, /Series$/);
   assert.equal(
     snapshot.works.find((w) => w.id === series.id).episodes[0].number,
     "Special 1",

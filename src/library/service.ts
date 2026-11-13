@@ -28,6 +28,8 @@ import {
 } from "../shared/validation";
 import type { Connection, Entry } from "../shared/model";
 import { mediaType, parseRange } from "./range";
+import { SettingsService } from "./settings";
+import { saveRuleSchema, targetSchema } from "../shared/settings";
 
 interface Draft {
   id: string;
@@ -38,6 +40,7 @@ interface Draft {
 }
 export class LibraryService {
   readonly store: LibraryStore;
+  readonly settings: SettingsService;
   private refreshing = false;
   private refreshTask?: Promise<void>;
   private controller = new AbortController();
@@ -49,6 +52,7 @@ export class LibraryService {
       path.join(app.getPath("userData"), "library.sqlite"),
       app.getLocale().startsWith("zh") ? "zh" : "en",
     );
+    this.settings = new SettingsService(this.store);
   }
   snapshot() {
     return this.store.snapshot(this.refreshing);
@@ -123,13 +127,13 @@ export class LibraryService {
     return this.cli;
   }
   private async provider(
-    connection: Pick<Connection, "id" | "type" | "roots">,
+    connection: Pick<Connection, "id" | "type" | "roots" | "browseRoots">,
   ): Promise<StorageProvider> {
     return connection.type === "local"
-      ? new LocalProvider(connection.roots)
+      ? new LocalProvider(connection.browseRoots || connection.roots)
       : new ZSpaceProvider(
           (await this.runtime()).runner(connection.id),
-          connection.roots,
+          connection.browseRoots || connection.roots,
         );
   }
   refresh() {
@@ -185,6 +189,45 @@ export class LibraryService {
   }
   async request(type: string, value: unknown): Promise<unknown> {
     switch (type) {
+      case "recognition-preferences":
+      case "source-models":
+      case "save-source":
+      case "remove-source": {
+        const result = await this.settings.request(type, value);
+        this.emit();
+        return result;
+      }
+      case "save-preference": {
+        const input = z
+          .object({
+            kind: z.enum(["series", "video"]),
+            mode: z.enum(["fixed", "last"]),
+            fixed: targetSchema.nullable(),
+          })
+          .strict()
+          .parse(value);
+        const previous = this.settings.snapshot().downloads[input.kind].fixed;
+        // Switching modes must remain available while storage is offline.
+        // Validate remote access only when the user selects a new target.
+        if (
+          input.fixed &&
+          (previous?.connectionId !== input.fixed.connectionId ||
+            previous.path !== input.fixed.path)
+        ) {
+          const connection = this.store.connection(input.fixed.connectionId);
+          await (
+            await this.provider(connection)
+          ).list(input.fixed.path, this.controller.signal);
+        }
+        const settings = this.settings.snapshot();
+        settings.downloads[input.kind] = saveRuleSchema.parse({
+          ...settings.downloads[input.kind],
+          mode: input.mode,
+          fixed: input.fixed,
+        });
+        this.settings.save(settings);
+        break;
+      }
       case "state":
         return this.snapshot();
       case "preferences":
@@ -194,23 +237,38 @@ export class LibraryService {
         void this.refresh();
         break;
       case "choose-local": {
+        const sourceId = value == null ? undefined : id.parse(value);
+        const previous = sourceId
+          ? this.drafts.get(sourceId) || this.store.connection(sourceId)
+          : undefined;
+        if (previous && previous.type !== "local")
+          throw new ProviderError("invalidInput");
         const choice = await dialog.showOpenDialog({
           properties: ["openDirectory", "multiSelections"],
         });
         if (choice.canceled) return null;
-        const roots = [
+        const picked = [
           ...new Set(
             await Promise.all(choice.filePaths.map((p) => realpath(p))),
           ),
         ];
+        const roots = [
+          ...new Set([
+            ...(previous
+              ? ("browseRoots" in previous && previous.browseRoots) ||
+                previous.roots
+              : []),
+            ...picked,
+          ]),
+        ];
         const draft: Draft = {
-          id: randomUUID(),
+          id: previous && "authorized" in previous ? previous.id : randomUUID(),
           type: "local",
           roots,
           authorized: true,
         };
         this.drafts.set(draft.id, draft);
-        return draft;
+        return { ...draft, selectedRoots: picked };
       }
       case "choose-cli": {
         const choice = await dialog.showOpenDialog({
@@ -279,11 +337,36 @@ export class LibraryService {
           this.controller.signal,
         );
       }
+      case "browse-roots": {
+        const source =
+          this.drafts.get(id.parse(value)) ||
+          this.store.connection(id.parse(value));
+        if ("authorized" in source) {
+          if (!source.authorized) throw new ProviderError("authExpired");
+          return source.roots;
+        }
+        const roots =
+          source.type === "zspace"
+            ? await ZSpaceProvider.spaces(
+                (await this.runtime()).runner(source.id),
+              )
+            : source.browseRoots || source.roots;
+        this.store.saveConnection({
+          ...this.store.connection(source.id),
+          browseRoots: roots,
+        });
+        return roots;
+      }
       case "save-connection": {
         if (this.refreshing) throw new ProviderError("scanBusy");
         const input = connectionSchema.parse(value);
         const previous = input.id ? this.store.connection(input.id) : null;
         const draft = input.draftId ? this.drafts.get(input.draftId) : null;
+        if (
+          previous &&
+          (previous.type !== input.type || (draft && draft.type !== "local"))
+        )
+          throw new ProviderError("invalidInput");
         const source =
           draft &&
           previous &&
@@ -291,7 +374,12 @@ export class LibraryService {
           previous.type === "local"
             ? {
                 ...draft,
-                roots: [...new Set([...previous.roots, ...draft.roots])],
+                roots: [
+                  ...new Set([
+                    ...(previous.browseRoots || previous.roots),
+                    ...draft.roots,
+                  ]),
+                ],
               }
             : draft || previous;
         if (
@@ -304,7 +392,10 @@ export class LibraryService {
         const provider = await this.provider(source);
         for (const root of roots) {
           if (
-            !source.roots.some((r) =>
+            !(
+              ("browseRoots" in source && source.browseRoots) ||
+              source.roots
+            ).some((r) =>
               source.type === "local"
                 ? containsPath(r, root)
                 : containsRemote(r, root),
@@ -319,6 +410,8 @@ export class LibraryService {
           name: input.name,
           type: source.type,
           roots: normalized,
+          browseRoots:
+            ("browseRoots" in source && source.browseRoots) || source.roots,
           status: "connected",
           error: null,
           scannedAt: previous?.scannedAt || null,

@@ -110,6 +110,7 @@ export function Choice({
   label,
   disabled,
   id,
+  placeholder,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -117,11 +118,12 @@ export function Choice({
   label: string;
   disabled?: boolean;
   id?: string;
+  placeholder?: string;
 }) {
   return (
     <Select value={value} onValueChange={onChange} disabled={disabled}>
       <SelectTrigger id={id} aria-label={label}>
-        <SelectValue />
+        <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectContent>
         <SelectGroup>

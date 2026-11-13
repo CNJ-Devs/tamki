@@ -21,8 +21,11 @@ Uses Electron 45.3.1, Chromium, TypeScript, React, shadcn/Radix, Phosphor Regula
 - Player tabs with real local media, byte-range seeking, resume history, automatic next episode, transport/speed/volume controls, fullscreen and mini player. Picture in picture uses Chromium's platform API where available.
 - Real website-attachment task records with progress and live pause/resume/cancel. Interrupted tasks remain visible after restart; automatic transfer recovery is not implemented.
 - Six semantic palettes, light/dark/system modes and English/Simplified Chinese.
+- Persistent series/video save preferences, a unified recognition-source selector, provider-specific custom-source configuration and a global prompt editor with atomic variable chips and tooltips. Model discovery uses the selected provider's API; credentials are encrypted with the OS-backed Electron safe storage and never returned to the interface.
 
 **This is not the complete product.** Website video detection, Bilibili/series downloading, storage migration, AI/search metadata recognition, additional cloud providers and production update/installer distribution are still pending.
+
+The download and recognition settings currently save configuration. The filename-parser choice, retrieval/search options and prompt are not yet connected to a recognition execution pipeline, and save preferences are not yet applied to the future video/series download workflow. Model discovery supports OpenAI, DeepSeek, Anthropic, Gemini and OpenAI-compatible endpoints; it verifies model listing, not inference or search entitlement. Compatible endpoints must use HTTPS, except for local loopback servers. API keys are sent only to their configured endpoint, without following redirects. If secure credential storage is unavailable, saving a key fails instead of falling back to plaintext.
 
 ### Storage setup
 
@@ -31,6 +34,8 @@ Open **Home → Settings → Add connection**. Local folders use the operating s
 **ZSpace is an experimental read-only adapter to the separately installed [official ZSpace NAS Agent Toolkit](https://download.zspace.cn/), tested against its 0.3.11 command contracts.** Tamki detects the toolkit's standard runtime cache or lets you locate its CLI. It starts a dedicated OAuth profile; complete authorization in the browser and enter the one-time code in Tamki, then choose media folders from the directory browser. The code travels only through the active child process's stdin, and the CLI is instructed to use the system credential store. Tamki does not bundle the toolkit, borrow an existing account profile, or implement a private OAuth client.
 
 The directory adapter and a 1 MiB media read have been checked against a real NAS. End-to-end fresh authorization and sustained remote playback in the packaged app still need live validation. CLI-mediated reads have per-request overhead and do not establish high-bitrate streaming performance or full-file version consistency. This is not a completed production NAS integration.
+
+Authorization drafts now survive the transition to folder selection. Browsing grants are separate from selected scan folders, so editing a connection can reach sibling folders without scanning whole drives. Directory failures show an error and retry action instead of an empty-folder message. A synthetic CLI regression covers authorization, nested browsing, saving and editing without a real account.
 
 ## Direction
 

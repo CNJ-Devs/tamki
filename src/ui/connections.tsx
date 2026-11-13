@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   FolderIcon,
   HardDrivesIcon,
@@ -32,6 +32,7 @@ interface Draft {
   type: "local" | "zspace";
   roots: string[];
   authorized: boolean;
+  selectedRoots?: string[];
 }
 export function ConnectionWizard({
   initial,
@@ -61,22 +62,46 @@ export function ConnectionWizard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const source = draft || initial;
-  useEffect(
-    () => () => {
-      const key = draft?.id || auth?.draftId;
-      if (key) void window.tamki.library("cancel-draft", key).catch(() => {});
-    },
-    [draft?.id, auth?.draftId],
+  const ownedDraft = useRef<string | undefined>(undefined);
+  const mounted = useRef(true);
+  const [browseRoots, setBrowseRoots] = useState(
+    initial?.browseRoots || initial?.roots || [],
   );
+  const [retry, setRetry] = useState(0);
+  const cancelDraft = (key: string) =>
+    window.tamki.library("cancel-draft", key).catch(() => {});
+  const own = async (key: string) => {
+    if (!mounted.current) {
+      await cancelDraft(key);
+      return false;
+    }
+    if (ownedDraft.current && ownedDraft.current !== key)
+      await cancelDraft(ownedDraft.current);
+    ownedDraft.current = key;
+    return true;
+  };
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (ownedDraft.current) void cancelDraft(ownedDraft.current);
+    };
+  }, []);
   const local = async () => {
     setBusy(true);
     setError("");
     try {
-      const value = await window.tamki.library<Draft | null>("choose-local");
-      if (value) {
+      const value = await window.tamki.library<Draft | null>(
+        "choose-local",
+        source?.id,
+      );
+      if (value && (await own(value.id))) {
         setDraft(value);
+        setBrowseRoots(value.roots);
         setType("local");
-        setRoots([...new Set([...roots, ...value.roots])]);
+        setRoots([
+          ...new Set([...roots, ...(value.selectedRoots || value.roots)]),
+        ]);
         setName(name || t("local"));
         setStep("folders");
       }
@@ -93,8 +118,12 @@ export function ConnectionWizard({
     setBusy(true);
     setCode("");
     try {
-      if (auth) await window.tamki.library("cancel-draft", auth.draftId);
-      setAuth(await window.tamki.library("zspace-begin"));
+      if (ownedDraft.current) await cancelDraft(ownedDraft.current);
+      ownedDraft.current = undefined;
+      setAuth(undefined);
+      const value =
+        await window.tamki.library<NonNullable<typeof auth>>("zspace-begin");
+      if (await own(value.draftId)) setAuth(value);
     } catch (e) {
       setError(errorMessage(e, t));
     } finally {
@@ -110,8 +139,13 @@ export function ConnectionWizard({
         draftId: auth.draftId,
         code,
       });
+      if (!mounted.current) {
+        await cancelDraft(value.id);
+        return;
+      }
       setCode("");
       setDraft(value);
+      setBrowseRoots(value.roots);
       setName(t("zspace"));
       setStep("folders");
     } catch (e) {
@@ -121,18 +155,26 @@ export function ConnectionWizard({
     }
   };
   useEffect(() => {
-    if (!source || !directory) {
+    if (!source) {
       setEntries([]);
       return;
     }
     let live = true;
     setBusy(true);
     setError("");
-    window.tamki
-      .library<Entry[]>("list", { id: source.id, path: directory })
-      .then((items) => {
-        if (live) setEntries(items.filter((e) => e.directory));
-      })
+    setEntries([]);
+    const load = directory
+      ? window.tamki
+          .library<Entry[]>("list", { id: source.id, path: directory })
+          .then((items) => {
+            if (live) setEntries(items.filter((e) => e.directory));
+          })
+      : window.tamki
+          .library<string[]>("browse-roots", source.id)
+          .then((roots) => {
+            if (live) setBrowseRoots(roots);
+          });
+    load
       .catch((e) => {
         if (live) {
           setEntries([]);
@@ -145,7 +187,7 @@ export function ConnectionWizard({
     return () => {
       live = false;
     };
-  }, [source?.id, directory]);
+  }, [source?.id, directory, retry]);
   const toggle = (path: string) =>
     setRoots((old) =>
       old.includes(path) ? old.filter((p) => p !== path) : [...old, path],
@@ -161,6 +203,7 @@ export function ConnectionWizard({
         roots,
         draftId: draft?.id,
       });
+      ownedDraft.current = undefined;
       onClose();
     } catch (e) {
       setError(errorMessage(e, t));
@@ -170,7 +213,7 @@ export function ConnectionWizard({
   };
   const displayed: Entry[] = directory
     ? entries
-    : (source?.roots || []).map((path) => ({
+    : browseRoots.map((path) => ({
         path,
         name: path,
         directory: true,
@@ -193,7 +236,7 @@ export function ConnectionWizard({
         step === "type" ? undefined : (
           <>
             <span className="modal-status" role="status">
-              {busy ? t("loading") : error}
+              {busy ? t("loading") : step === "auth" ? error : ""}
             </span>
             <Button variant="secondary" onClick={onClose}>
               {t("cancel")}
@@ -305,7 +348,7 @@ export function ConnectionWizard({
                 onChange={(e) => setName(e.target.value)}
               />
             </FormField>
-            <FormField label={t("roots")}>
+            <FormField label={t("roots")} error={error}>
               <div className="directory-toolbar">
                 <IconButton
                   label={t("back")}
@@ -314,9 +357,10 @@ export function ConnectionWizard({
                     const parent =
                       directory.slice(0, directory.lastIndexOf("/")) || "/";
                     setDirectory(
-                      source!.roots.some(
+                      browseRoots.some(
                         (root) =>
-                          parent === root || parent.startsWith(root + "/"),
+                          parent === root ||
+                          parent.startsWith(root === "/" ? "/" : root + "/"),
                       )
                         ? parent
                         : "",
@@ -340,6 +384,7 @@ export function ConnectionWizard({
                 {directory && (
                   <label className="folder-row">
                     <Checkbox
+                      disabled={busy}
                       checked={roots.includes(directory)}
                       onCheckedChange={() => toggle(directory)}
                     />
@@ -349,6 +394,7 @@ export function ConnectionWizard({
                 {displayed.map((entry) => (
                   <div className="folder-row" key={entry.path}>
                     <Checkbox
+                      disabled={busy}
                       aria-label={entry.name}
                       checked={roots.includes(entry.path)}
                       onCheckedChange={() => toggle(entry.path)}
@@ -365,7 +411,16 @@ export function ConnectionWizard({
                     </Button>
                   </div>
                 ))}
-                {!displayed.length && !busy && <Blank title={t("noFolders")} />}
+                {error && !busy ? (
+                  <Button
+                    variant="secondary"
+                    onClick={() => setRetry((v) => v + 1)}
+                  >
+                    {t("refresh")}
+                  </Button>
+                ) : (
+                  !displayed.length && !busy && <Blank title={t("noFolders")} />
+                )}
               </div>
             </FormField>
             <div className="selected-roots">
@@ -613,7 +668,9 @@ export function FilePicker({
                 </label>
               ),
             )}
-            {!displayed.length && !busy && <Blank title={t("noVideos")} />}
+            {!displayed.length && !busy && !error && (
+              <Blank title={t("noVideos")} />
+            )}
           </div>
         </FieldGroup>
       </Fade>

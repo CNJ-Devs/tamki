@@ -11,6 +11,8 @@ export interface Connection {
   type: "local" | "zspace";
   name: string;
   roots: string[];
+  /** Authorized browsing scope; roots above are only the selected scan folders. */
+  browseRoots?: string[];
   status: "connected" | "offline" | "scanning";
   error: string | null;
   scannedAt: number | null;
@@ -66,6 +68,7 @@ export interface Transfer {
   createdAt: number;
 }
 export interface LibraryState {
+  settings: import("./settings").SettingsState;
   connections: Connection[];
   works: Work[];
   collections: Collection[];

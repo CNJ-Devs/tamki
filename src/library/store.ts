@@ -12,6 +12,7 @@ import type {
   Work,
 } from "../shared/model";
 import type { ScanResult } from "./scan";
+import { defaultSettings, type SettingsState } from "../shared/settings";
 import type { z } from "zod";
 import type { editSchema } from "../shared/validation";
 
@@ -103,6 +104,12 @@ export class LibraryStore {
   setConfig(key: string, value: string) {
     this.put("config", key, value);
   }
+  setConfigs(values: Record<string, string>) {
+    this.transaction(() => {
+      for (const [key, value] of Object.entries(values))
+        this.put("config", key, value);
+    });
+  }
   connections(): Connection[] {
     return this.all("connection");
   }
@@ -148,6 +155,9 @@ export class LibraryStore {
       .filter((w) => w.episodes.length)
       .sort((a, b) => a.order - b.order || b.createdAt - a.createdAt);
     return {
+      settings: this.config("settings")
+        ? (JSON.parse(this.config("settings")!) as SettingsState)
+        : defaultSettings(this.preferences().language),
       connections: this.connections(),
       works,
       collections: this.all("collection"),
