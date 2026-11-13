@@ -1,15 +1,23 @@
 import { contextBridge, ipcRenderer } from "electron";
+const subscribe = (channel: string, callback: (value: unknown) => void) => {
+  const listener = (_event: unknown, value: unknown) => callback(value);
+  ipcRenderer.on(channel, listener);
+  return () => ipcRenderer.removeListener(channel, listener);
+};
 contextBridge.exposeInMainWorld("tamki", {
-  action: (type: string, value?: string | number | boolean) =>
+  action: (type: string, value?: unknown) =>
     ipcRenderer.invoke("browser:action", { type, value }),
-  onState: (callback: (state: unknown) => void) => {
-    const listener = (_event: unknown, state: unknown) => callback(state);
-    ipcRenderer.on("browser:state", listener);
-    return () => ipcRenderer.removeListener("browser:state", listener);
+  library: async (type: string, value?: unknown) => {
+    const result = await ipcRenderer.invoke("library:action", { type, value });
+    if (!result.ok) throw new Error(result.error);
+    return result.data;
   },
-  onFocusAddress: (callback: () => void) => {
-    const listener = () => callback();
-    ipcRenderer.on("browser:focus-address", listener);
-    return () => ipcRenderer.removeListener("browser:focus-address", listener);
-  },
+  onState: (callback: (state: unknown) => void) =>
+    subscribe("browser:state", callback),
+  onLibrary: (callback: (state: unknown) => void) =>
+    subscribe("library:state", callback),
+  onFocusAddress: (callback: () => void) =>
+    subscribe("browser:focus-address", callback),
+  onFocusTabs: (callback: () => void) =>
+    subscribe("browser:focus-tabs", callback),
 });

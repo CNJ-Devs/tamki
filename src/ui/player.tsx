@@ -1,0 +1,582 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  PlayIcon,
+  PauseIcon,
+  SkipBackIcon,
+  SkipForwardIcon,
+  RewindIcon,
+  FastForwardIcon,
+  SpeakerHighIcon,
+  SpeakerSlashIcon,
+  CornersOutIcon,
+  CornersInIcon,
+  ArrowSquareOutIcon,
+  PictureInPictureIcon,
+  ArrowsOutSimpleIcon,
+  ListBulletsIcon,
+  XIcon,
+} from "@phosphor-icons/react";
+import type { Work } from "../shared/model";
+import { episodeName } from "../shared/model";
+import { IconButton, Button, TextTip, Fade, clock } from "./common";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+} from "./components/ui/select";
+import { Slider } from "./components/ui/slider";
+import { PlaybackTimeline } from "./playback-timeline";
+import { mediaSeekBoundary } from "../shared/seek-boundary";
+import { useI18n, errorMessage } from "./i18n";
+import { toast } from "sonner";
+import { cn } from "./lib/utils";
+
+export function Player({
+  work,
+  active,
+  requestedEpisode,
+  activate,
+}: {
+  work: Work;
+  active: boolean;
+  requestedEpisode?: { id: string; nonce: number };
+  activate(): void;
+}) {
+  const t = useI18n();
+  const root = useRef<HTMLDivElement>(null),
+    stage = useRef<HTMLDivElement>(null),
+    video = useRef<HTMLVideoElement>(null);
+  const [episodeId, setEpisodeId] = useState(
+      work.resumeId || work.episodes[0]?.id,
+    ),
+    [paused, setPaused] = useState(true),
+    [duration, setDuration] = useState(0),
+    [position, setPosition] = useState(0),
+    [preview, setPreview] = useState<number | null>(null),
+    [failure, setFailure] = useState(false),
+    [volume, setVolume] = useState(0.8),
+    [muted, setMuted] = useState(false),
+    [speed, setSpeed] = useState("1"),
+    [queue, setQueue] = useState(false),
+    [fullscreen, setFullscreen] = useState(false),
+    [shown, setShown] = useState(true),
+    [mini, setMini] = useState(false),
+    [pip, setPip] = useState(false),
+    [switching, setSwitching] = useState(false),
+    [rect, setRect] = useState({ left: 0, top: 0, width: 1, height: 1 }),
+    [boundary, setBoundary] = useState({ atStart: true, atEnd: true });
+  const index = work.episodes.findIndex((e) => e.id === episodeId),
+    episode = work.episodes[index];
+  const currentEpisode = useRef(episode);
+  currentEpisode.current = episode;
+  const loadedId = useRef<string | null>(null);
+  const saved = useRef(0),
+    hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const commit = useCallback((force = false) => {
+    const v = video.current,
+      e = currentEpisode.current;
+    if (
+      !v ||
+      !e ||
+      loadedId.current !== e.id ||
+      !Number.isFinite(v.duration) ||
+      v.duration <= 0 ||
+      v.readyState < 1
+    )
+      return;
+    if (!force && Date.now() - saved.current < 3000) return;
+    saved.current = Date.now();
+    void window.tamki
+      .library("progress", {
+        id: e.id,
+        position: v.currentTime,
+        duration: v.duration,
+      })
+      .catch(() => {});
+  }, []);
+  const updateBoundary = () => {
+    const next = mediaSeekBoundary(video.current, duration);
+    setBoundary((old) =>
+      old.atStart === next.atStart && old.atEnd === next.atEnd ? old : next,
+    );
+  };
+  useEffect(() => {
+    if (requestedEpisode) {
+      commit(true);
+      setEpisodeId(requestedEpisode.id);
+    }
+  }, [requestedEpisode?.nonce]);
+  useEffect(() => {
+    if (!episode) setEpisodeId(work.episodes[0]?.id);
+  }, [episode, work.episodes]);
+  useEffect(() => {
+    const v = video.current;
+    if (!v || !episode) return;
+    let cancelled = false;
+    setDuration(0);
+    setPosition(0);
+    setFailure(false);
+    setBoundary({ atStart: true, atEnd: true });
+    const restore = () => {
+      if (cancelled) return;
+      loadedId.current = episode.id;
+      setDuration(Number.isFinite(v.duration) ? v.duration : 0);
+      if (episode.position > 0 && episode.position < v.duration - 0.02)
+        v.currentTime = episode.position;
+      v.volume = volume;
+      v.muted = muted;
+      v.playbackRate = Number(speed);
+      void v.play().catch(() => setPaused(true));
+    };
+    v.addEventListener("loadedmetadata", restore, { once: true });
+    void window.tamki
+      .library<string>("media", episode.id)
+      .then((url) => {
+        if (!cancelled) {
+          v.src = url;
+          v.load();
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setFailure(true);
+      });
+    return () => {
+      commit(true);
+      loadedId.current = null;
+      cancelled = true;
+      v.removeEventListener("loadedmetadata", restore);
+      v.pause();
+      v.removeAttribute("src");
+      v.load();
+    };
+  }, [episodeId]);
+  useEffect(
+    () => () => {
+      commit(true);
+      if (hideTimer.current) clearTimeout(hideTimer.current);
+    },
+    [],
+  );
+  useEffect(() => {
+    const el = stage.current;
+    if (!el) return;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      setRect({ left: r.left, top: r.top, width: r.width, height: r.height });
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    window.addEventListener("resize", measure);
+    measure();
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [active, fullscreen]);
+  useEffect(() => {
+    const listener = () => {
+      setFullscreen(document.fullscreenElement === root.current);
+      setShown(true);
+    };
+    document.addEventListener("fullscreenchange", listener);
+    return () => document.removeEventListener("fullscreenchange", listener);
+  }, []);
+  useEffect(() => {
+    const v = video.current!;
+    const enter = () => {
+        setMini(false);
+        setPip(true);
+      },
+      leave = () => setPip(false);
+    v.addEventListener("enterpictureinpicture", enter);
+    v.addEventListener("leavepictureinpicture", leave);
+    return () => {
+      v.removeEventListener("enterpictureinpicture", enter);
+      v.removeEventListener("leavepictureinpicture", leave);
+    };
+  }, []);
+  const show = () => {
+    setShown(true);
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    if (fullscreen && !video.current?.paused && !queue)
+      hideTimer.current = setTimeout(() => setShown(false), 2200);
+  };
+  useEffect(() => {
+    show();
+  }, [fullscreen, paused, queue]);
+  const toggle = () => {
+    const v = video.current;
+    if (!v || failure) return;
+    if (v.paused) void v.play().catch(() => setFailure(true));
+    else v.pause();
+    show();
+  };
+  const seek = (value: number) => {
+    const v = video.current;
+    if (!v || !duration) return;
+    v.currentTime = Math.max(0, Math.min(duration, value));
+    setPosition(v.currentTime);
+    updateBoundary();
+    commit(true);
+    show();
+  };
+  const choose = (id: string) => {
+    commit(true);
+    setEpisodeId(id);
+    setQueue(false);
+  };
+  const picture = async () => {
+    if (switching) return;
+    setSwitching(true);
+    try {
+      if (document.pictureInPictureElement)
+        await document.exitPictureInPicture();
+      else {
+        if (document.fullscreenElement) await document.exitFullscreen();
+        setMini(false);
+        await video.current!.requestPictureInPicture();
+      }
+    } catch {
+      toast.error(t("pipFailed"), { duration: 3500 });
+    } finally {
+      setSwitching(false);
+    }
+  };
+  const small = async () => {
+    if (switching) return;
+    setSwitching(true);
+    try {
+      if (document.pictureInPictureElement)
+        await document.exitPictureInPicture();
+      if (document.fullscreenElement) await document.exitFullscreen();
+      setMini((v) => !v);
+      setQueue(false);
+    } catch (e) {
+      toast.error(errorMessage(e, t));
+    } finally {
+      setSwitching(false);
+    }
+  };
+  const full = async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else {
+        if (document.pictureInPictureElement)
+          await document.exitPictureInPicture();
+        setMini(false);
+        await root.current!.requestFullscreen();
+      }
+    } catch (e) {
+      toast.error(errorMessage(e, t));
+    }
+  };
+  const restore = () => {
+    activate();
+    setMini(false);
+  };
+  if (!episode) return null;
+  const target = mini
+    ? {
+        left: Math.max(12, window.innerWidth - 372),
+        top: Math.max(12, window.innerHeight - 255),
+        width: 352,
+        height: 198,
+      }
+    : rect;
+  return (
+    <div
+      ref={root}
+      className={cn(
+        "player",
+        fullscreen && "is-fullscreen",
+        !active && "inactive-player",
+        !shown && "controls-hidden",
+      )}
+      onPointerMove={show}
+      onFocusCapture={show}
+      onKeyDown={(e) => {
+        if (
+          (e.target as HTMLElement).closest(
+            "button,input,[role=slider],[role=combobox]",
+          )
+        )
+          return;
+        if (e.code === "Space" || e.key === "k") {
+          e.preventDefault();
+          toggle();
+        }
+        if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          seek(position - 10);
+        }
+        if (e.key === "ArrowRight") {
+          e.preventDefault();
+          seek(position + 10);
+        }
+      }}
+      tabIndex={0}
+    >
+      <header className="player-header" inert={fullscreen && !shown}>
+        <TextTip>{`${work.title} · ${episodeName(episode)}`}</TextTip>
+      </header>
+      <div ref={stage} className="player-stage">
+        {(mini || pip) && (
+          <div className="player-placeholder">
+            <p>{t(mini ? "playingMini" : "playingPip")}</p>
+            <Button
+              variant="secondary"
+              onClick={() => (mini ? restore() : void picture())}
+            >
+              {t("returnPlayer")}
+            </Button>
+          </div>
+        )}
+        {failure && (
+          <div className="player-placeholder">
+            <p role="alert">{t("playbackFailed")}</p>
+          </div>
+        )}
+      </div>
+      <div
+        className={cn(
+          "video-surface",
+          mini && "mini-surface",
+          pip && "pip-surface",
+        )}
+        style={{
+          left: target.left,
+          top: target.top,
+          width: target.width,
+          height: target.height,
+        }}
+      >
+        <video
+          ref={video}
+          playsInline
+          onClick={toggle}
+          onDoubleClick={() => void full()}
+          onPlay={() => {
+            setPaused(false);
+            show();
+          }}
+          onPause={() => {
+            setPaused(true);
+            commit(true);
+          }}
+          onTimeUpdate={() => {
+            setPosition(video.current!.currentTime);
+            updateBoundary();
+            commit();
+          }}
+          onSeeked={() => {
+            updateBoundary();
+            commit(true);
+          }}
+          onError={() => {
+            if (video.current?.getAttribute("src")) setFailure(true);
+          }}
+          onEnded={() => {
+            commit(true);
+            if (index < work.episodes.length - 1)
+              choose(work.episodes[index + 1].id);
+            else setPaused(true);
+          }}
+        />
+        {mini && (
+          <>
+            <div className="mini-heading">
+              <TextTip>{work.title}</TextTip>
+              <IconButton label={t("returnPlayer")} onClick={restore}>
+                <ArrowsOutSimpleIcon />
+              </IconButton>
+              <IconButton
+                label={t("close")}
+                onClick={() => {
+                  video.current?.pause();
+                  setMini(false);
+                }}
+              >
+                <XIcon />
+              </IconButton>
+            </div>
+            <div className="mini-controls">
+              <IconButton label={t(paused ? "play" : "pause")} onClick={toggle}>
+                {paused ? <PlayIcon /> : <PauseIcon />}
+              </IconButton>
+              <span>
+                {clock(position)} / {clock(duration)}
+              </span>
+              <IconButton
+                label={t("pip")}
+                onClick={() => void picture()}
+                disabled={switching}
+              >
+                <ArrowSquareOutIcon />
+              </IconButton>
+            </div>
+          </>
+        )}
+      </div>
+      <footer className="player-controls" inert={fullscreen && !shown}>
+        <PlaybackTimeline
+          media={video}
+          duration={duration}
+          enabled={active}
+          disabled={!duration || failure}
+          onSeek={seek}
+          onPreview={setPreview}
+          onMediaSample={updateBoundary}
+        />
+        <div className="player-toolbar">
+          <div className="player-transport">
+            <IconButton
+              label={t(paused ? "play" : "pause")}
+              onClick={toggle}
+              disabled={failure}
+            >
+              {paused ? <PlayIcon /> : <PauseIcon />}
+            </IconButton>
+            <IconButton
+              label={t("previousEpisode")}
+              disabled={index <= 0}
+              onClick={() => choose(work.episodes[index - 1].id)}
+            >
+              <SkipBackIcon />
+            </IconButton>
+            <IconButton
+              label={t("nextEpisode")}
+              disabled={index >= work.episodes.length - 1}
+              onClick={() => choose(work.episodes[index + 1].id)}
+            >
+              <SkipForwardIcon />
+            </IconButton>
+            <IconButton
+              label={t("rewind")}
+              disabled={failure || boundary.atStart}
+              onClick={() => seek(position - 10)}
+            >
+              <RewindIcon />
+            </IconButton>
+            <IconButton
+              label={t("fastForward")}
+              disabled={failure || boundary.atEnd}
+              onClick={() => seek(position + 10)}
+            >
+              <FastForwardIcon />
+            </IconButton>
+          </div>
+          <span className="player-time">
+            {clock(preview ?? position)} <span>/ {clock(duration)}</span>
+          </span>
+          <div className="player-options">
+            <div className="player-volume">
+              <IconButton
+                label={t(muted ? "unmute" : "mute")}
+                onClick={() => {
+                  const next = !muted;
+                  setMuted(next);
+                  video.current!.muted = next;
+                }}
+              >
+                {muted || !volume ? <SpeakerSlashIcon /> : <SpeakerHighIcon />}
+              </IconButton>
+              <Slider
+                value={[muted ? 0 : volume]}
+                min={0}
+                max={1}
+                step={0.01}
+                thumbLabel={t("volume")}
+                onValueChange={([v]) => {
+                  setVolume(v);
+                  setMuted(false);
+                  video.current!.volume = v;
+                  video.current!.muted = false;
+                }}
+              />
+            </div>
+            <Select
+              value={speed}
+              onValueChange={(v) => {
+                setSpeed(v);
+                video.current!.playbackRate = Number(v);
+              }}
+            >
+              <SelectTrigger aria-label={t("speed")}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent
+                container={fullscreen ? root.current || undefined : undefined}
+              >
+                <SelectGroup>
+                  {[0.5, 0.75, 1, 1.25, 1.5, 2].map((v) => (
+                    <SelectItem key={v} value={String(v)}>
+                      {v}×
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <IconButton
+              label={t("queue")}
+              aria-expanded={queue}
+              onClick={() => {
+                setQueue(!queue);
+                show();
+              }}
+            >
+              <ListBulletsIcon />
+            </IconButton>
+            <IconButton
+              label={t("mini")}
+              disabled={switching || failure}
+              onClick={() => void small()}
+            >
+              <PictureInPictureIcon />
+            </IconButton>
+            <IconButton
+              label={t("pip")}
+              disabled={
+                switching || failure || !document.pictureInPictureEnabled
+              }
+              onClick={() => void picture()}
+            >
+              <ArrowSquareOutIcon />
+            </IconButton>
+            <IconButton
+              label={t(fullscreen ? "exitFullscreen" : "fullscreen")}
+              onClick={() => void full()}
+            >
+              {fullscreen ? <CornersInIcon /> : <CornersOutIcon />}
+            </IconButton>
+          </div>
+        </div>
+      </footer>
+      {queue && (
+        <div className="player-queue">
+          <header>
+            <h3>{t("queue")}</h3>
+            <IconButton label={t("close")} onClick={() => setQueue(false)}>
+              <XIcon />
+            </IconButton>
+          </header>
+          <Fade>
+            {work.episodes.map((e) => (
+              <Button
+                key={e.id}
+                variant={e.id === episode.id ? "secondary" : "ghost"}
+                disabled={e.missing}
+                onClick={() => choose(e.id)}
+              >
+                <TextTip>{episodeName(e)}</TextTip>
+                <span>{clock(e.duration)}</span>
+              </Button>
+            ))}
+          </Fade>
+        </div>
+      )}
+    </div>
+  );
+}
