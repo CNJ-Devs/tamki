@@ -16,9 +16,12 @@ import { relativeDepth, type ScanResult } from "./scan";
 import { defaultSettings, type SettingsState } from "../shared/settings";
 import type { z } from "zod";
 import type { editSchema } from "../shared/validation";
+import type { RecognitionResult } from "../shared/recognition";
 
 type StoredWork = Omit<Work, "episodes"> & { excluded: boolean };
 type StoredEpisode = Episode & { excluded: boolean; manual: boolean };
+export const recognitionSignature = (work: Work) =>
+  stableId(...work.episodes.map((e) => `${e.id}:${e.modified}`).sort());
 export const stableId = (...values: string[]) =>
   createHash("sha256")
     .update(JSON.stringify(values))
@@ -173,6 +176,94 @@ export class LibraryStore {
       preferences: this.preferences(),
       refreshing,
     };
+  }
+  setRecognition(id: string, recognition: NonNullable<Work["recognition"]>) {
+    const work = this.get<StoredWork>("work", id);
+    if (work && !work.excluded) this.put("work", id, { ...work, recognition });
+  }
+  queueRecognition(sourceId: string, retryIds: string[] = []) {
+    this.transaction(() => {
+      for (const work of this.snapshot().works) {
+        if (!work.episodes.some((e) => !e.missing)) continue;
+        const signature = recognitionSignature(work),
+          previous = work.recognition;
+        if (
+          !previous ||
+          previous.signature !== signature ||
+          (previous.status === "queued" && previous.sourceId !== sourceId) ||
+          retryIds.includes(work.id)
+        )
+          this.setRecognition(work.id, {
+            status: "queued",
+            sourceId,
+            signature,
+            candidate:
+              previous?.sourceId === sourceId ? previous.candidate : undefined,
+          });
+      }
+    });
+  }
+  /** Only fill empty, untouched fields. Re-read at commit so concurrent edits win. */
+  applyAutomatic(
+    baseline: Work,
+    result: RecognitionResult,
+    recognition: NonNullable<Work["recognition"]>,
+  ) {
+    const current = this.get<StoredWork>("work", baseline.id);
+    if (
+      !current ||
+      current.excluded ||
+      current.recognition?.signature !== baseline.recognition?.signature ||
+      current.recognition?.status !== "running"
+    )
+      return;
+    const locks =
+      this.get<Record<string, boolean>>("metadata-lock", baseline.id) || {};
+    const fill = (
+      target: Record<string, unknown>,
+      previous: Record<string, unknown>,
+      next: Record<string, unknown>,
+      prefix: string,
+    ) => {
+      for (const field of ["title", "description", "tags", "number", "cover"]) {
+        if (next[field] == null || locks[`${prefix}:${field}`]) continue;
+        if (JSON.stringify(target[field]) !== JSON.stringify(previous[field]))
+          continue;
+        const empty =
+          target[field] == null ||
+          target[field] === "" ||
+          (Array.isArray(target[field]) && !target[field].length);
+        if (empty) target[field] = next[field];
+      }
+    };
+    this.transaction(() => {
+      if (result.work)
+        fill(
+          current as unknown as Record<string, unknown>,
+          baseline as unknown as Record<string, unknown>,
+          result.work,
+          "work",
+        );
+      this.put("work", current.id, { ...current, recognition });
+      for (const incoming of result.files) {
+        const episode = this.get<StoredEpisode>("episode", incoming.id),
+          old = baseline.episodes.find((e) => e.id === incoming.id);
+        if (
+          !episode ||
+          !old ||
+          episode.excluded ||
+          episode.workId !== baseline.id
+        )
+          continue;
+        fill(
+          episode as unknown as Record<string, unknown>,
+          old as unknown as Record<string, unknown>,
+          incoming,
+          episode.id,
+        );
+        this.put("episode", episode.id, episode);
+      }
+    });
   }
   applyScan(
     connectionId: string,
@@ -406,11 +497,55 @@ export class LibraryStore {
     )
       throw new Error("invalidInput");
     this.transaction(() => {
+      const locks =
+        this.get<Record<string, boolean>>("metadata-lock", work.id) || {};
+      const protect = (
+        prefix: string,
+        old: Record<string, unknown>,
+        next: Record<string, unknown>,
+      ) => {
+        for (const field of ["title", "description", "tags", "number", "cover"])
+          if (
+            field in next &&
+            JSON.stringify(old[field]) !== JSON.stringify(next[field])
+          )
+            locks[`${prefix}:${field}`] = true;
+      };
+      protect(
+        "work",
+        { ...work },
+        {
+          title: input.title,
+          description: input.description,
+          tags: input.tags,
+          ...(input.cover ? { cover: input.cover } : {}),
+        },
+      );
+      for (const episode of input.episodes)
+        protect(
+          episode.id,
+          { ...episodes.find((e) => e.id === episode.id)! },
+          episode,
+        );
+      this.put("metadata-lock", work.id, locks);
       this.put("work", work.id, {
         ...work,
         title: input.title,
         description: input.description,
         tags: [...new Set(input.tags)],
+        ...(input.cover ? { cover: input.cover } : {}),
+        ...(input.metadataReviewed
+          ? {
+              recognition: {
+                status: "complete",
+                sourceId: "manual",
+                signature: recognitionSignature({
+                  ...work,
+                  episodes: episodes.filter((e) => !removed.has(e.id)),
+                }),
+              },
+            }
+          : {}),
         excluded: episodes.every((e) => removed.has(e.id)),
         resumeId: work.resumeId
           ? removed.has(work.resumeId)

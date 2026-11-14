@@ -16,6 +16,7 @@ import {
   Modal,
 } from "./common";
 import { Input } from "./components/ui/input";
+import { Checkbox } from "./components/ui/checkbox";
 import { recognitionOptions } from "./recognition-flow";
 import { FieldGroup } from "./components/ui/field";
 import { SourceEditor } from "./source-editor";
@@ -47,6 +48,27 @@ export function RecognitionSettings({
     void update(patch).catch((e) => toast.error(errorMessage(e, t)));
   return (
     <FieldGroup>
+      <div className="automatic-setting">
+        <label className="checkbox-row">
+          <Checkbox
+            checked={config.automatic !== false}
+            onCheckedChange={(value) => apply({ automatic: value === true })}
+          />
+          {t("automaticRecognition")}
+        </label>
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={config.automatic === false}
+          onClick={() =>
+            void window.tamki
+              .library("retry-recognition")
+              .catch((e) => toast.error(errorMessage(e, t)))
+          }
+        >
+          {t("retryUnidentified")}
+        </Button>
+      </div>
       <FormField label={t("filenameParser")}>
         <div className="field-control-row">
           <Choice

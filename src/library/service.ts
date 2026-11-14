@@ -1,4 +1,4 @@
-import { app, dialog, protocol, shell as systemShell } from "electron";
+import { app, dialog, protocol, net, shell as systemShell } from "electron";
 import { realpath, readdir, stat } from "node:fs/promises";
 import { randomUUID, randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -7,6 +7,8 @@ import path from "node:path";
 import os from "node:os";
 import { z } from "zod";
 import { RecognitionService } from "./recognition";
+import { AutomaticRecognition } from "./automatic-recognition";
+import { ArtworkCache } from "./artwork";
 import { LibraryStore } from "./store";
 import { scanScopes } from "./scan";
 import { LocalProvider } from "../providers/local";
@@ -43,6 +45,8 @@ export class LibraryService {
   readonly store: LibraryStore;
   readonly settings: SettingsService;
   readonly recognition: RecognitionService;
+  readonly automatic: AutomaticRecognition;
+  readonly artwork: ArtworkCache;
   private refreshing = false;
   private refreshTask?: Promise<void>;
   private controller = new AbortController();
@@ -55,7 +59,21 @@ export class LibraryService {
       app.getLocale().startsWith("zh") ? "zh" : "en",
     );
     this.settings = new SettingsService(this.store);
-    this.recognition = new RecognitionService(this.store, this.settings);
+    this.artwork = new ArtworkCache(
+      path.join(app.getPath("userData"), "artwork"),
+      net.fetch.bind(net) as typeof fetch,
+    );
+    this.recognition = new RecognitionService(
+      this.store,
+      this.settings,
+      this.artwork,
+    );
+    this.automatic = new AutomaticRecognition(
+      this.store,
+      this.settings,
+      this.recognition,
+      emit,
+    );
   }
   snapshot() {
     return this.store.snapshot(this.refreshing);
@@ -164,6 +182,7 @@ export class LibraryService {
             this.controller.signal,
           );
           this.store.applyScan(connection.id, connection.roots[0], result);
+          this.automatic.schedule();
           failed = result.failures.length > 0;
           this.store.saveConnection({
             ...connection,
@@ -210,6 +229,24 @@ export class LibraryService {
       case "cancel-recognition":
         this.recognition.cancel(id.parse(value));
         return true;
+      case "retry-recognition": {
+        const workId = value == null ? null : id.parse(value);
+        const works = this.store.snapshot().works;
+        if (workId && !works.some((w) => w.id === workId))
+          throw new ProviderError("mediaMissing");
+        this.automatic.schedule(
+          works
+            .filter((w) =>
+              workId
+                ? w.id === workId
+                : ["failed", "needs-choice", "local"].includes(
+                    w.recognition?.status || "",
+                  ) || w.recognition?.artworkError,
+            )
+            .map((w) => w.id),
+        );
+        break;
+      }
       case "open-citation": {
         const url = z.string().url().max(8192).parse(value),
           parsed = new URL(url);
@@ -228,6 +265,7 @@ export class LibraryService {
       case "save-source":
       case "remove-source": {
         const result = await this.settings.request(type, value);
+        if (type !== "source-models") this.automatic.schedule();
         this.emit();
         return result;
       }
@@ -523,6 +561,7 @@ export class LibraryService {
           },
           true,
         );
+        this.automatic.schedule();
         break;
       }
       case "prepare-episodes": {
@@ -542,6 +581,7 @@ export class LibraryService {
       }
       case "edit": {
         const input = editSchema.parse(value);
+        if (input.cover) await this.artwork.read(input.cover);
         const additions = [];
         for (const connectionId of new Set(
           input.attachments.map((a) => a.connectionId),
@@ -557,6 +597,7 @@ export class LibraryService {
           );
         }
         this.store.edit(input, additions);
+        this.automatic.schedule();
         break;
       }
       case "remove-work":
@@ -587,6 +628,14 @@ export class LibraryService {
         this.store.connection(episode.connectionId);
         return `tamki-media://video/${episode.id}?ticket=${this.ticket}`;
       }
+      case "cover": {
+        const key = z
+          .string()
+          .regex(/^[a-f0-9]{64}$/)
+          .parse(value);
+        await this.artwork.read(key);
+        return `tamki-media://cover/${key}?ticket=${this.ticket}`;
+      }
       default:
         throw new ProviderError("invalidInput");
     }
@@ -598,11 +647,26 @@ export class LibraryService {
       try {
         const url = new URL(request.url);
         if (
-          url.hostname !== "video" ||
+          !["video", "cover"].includes(url.hostname) ||
           url.searchParams.get("ticket") !== this.ticket ||
           !["GET", "HEAD"].includes(request.method)
         )
           return new Response(null, { status: 403 });
+        if (url.hostname === "cover") {
+          const cover = await this.artwork.read(url.pathname.slice(1));
+          return new Response(
+            request.method === "HEAD" ? null : new Uint8Array(cover.data),
+            {
+              headers: {
+                "Content-Type": cover.type,
+                "Content-Length": String(cover.data.length),
+                "Cache-Control": "private, max-age=31536000, immutable",
+                "X-Content-Type-Options": "nosniff",
+                "Access-Control-Allow-Origin": "null",
+              },
+            },
+          );
+        }
         const episode = this.store.episode(id.parse(url.pathname.slice(1)));
         if (episode.missing) return new Response(null, { status: 404 });
         const connection = this.store.connection(episode.connectionId);
@@ -688,6 +752,7 @@ export class LibraryService {
     });
   }
   async close() {
+    await this.automatic.close();
     this.recognition.close();
     this.controller.abort();
     this.cli?.close();

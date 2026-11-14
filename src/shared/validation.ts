@@ -29,6 +29,11 @@ export const editSchema = z
     title: z.string().trim().min(1).max(500),
     description: z.string().max(30000),
     tags: z.array(z.string().trim().min(1).max(100)).max(100),
+    cover: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+    metadataReviewed: z.boolean().optional(),
     removedEpisodeIds: z.array(id).max(10000),
     attachments: z
       .array(z.object({ connectionId: id, path: location }).strict())

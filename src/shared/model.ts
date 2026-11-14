@@ -50,6 +50,17 @@ export interface Work {
   title: string;
   description: string;
   tags: string[];
+  /** Opaque key of verified artwork in the local cache. */
+  cover?: string;
+  recognition?: {
+    status:
+      "queued" | "running" | "complete" | "needs-choice" | "failed" | "local";
+    sourceId: string;
+    signature: string;
+    candidate?: string;
+    error?: string;
+    artworkError?: boolean;
+  };
   createdAt: number;
   order: number;
   resumeId: string | null;

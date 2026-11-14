@@ -87,6 +87,7 @@ export class SettingsService {
       case "recognition-preferences": {
         const patch = z
           .object({
+            automatic: z.boolean().optional(),
             parser: z.enum(["release", "anitomy"]).optional(),
             defaultSourceId: id.optional(),
             aiPrompt: promptSchema.optional(),

@@ -13,11 +13,13 @@ import { builtinRecognition } from "../providers/metadata";
 import { aiRecognitionBatches } from "../providers/ai-recognition";
 import { parseFilename } from "./filename";
 import { ProviderError } from "../providers/provider";
+import type { ArtworkCache } from "./artwork";
 export class RecognitionService {
   private jobs = new Map<string, AbortController>();
   constructor(
     private store: LibraryStore,
     private settings: SettingsService,
+    private artwork: ArtworkCache,
   ) {}
   cancel(id: string) {
     this.jobs.get(id)?.abort();
@@ -120,8 +122,21 @@ export class RecognitionService {
         );
       }
       controller.signal.throwIfAborted();
-      if (response.kind === "result")
+      if (response.kind === "result") {
         response.result = validateRecognition(response.result, input);
+        if (response.result.work?.cover) {
+          try {
+            response.result.work.cover = await this.artwork.cache(
+              response.result.work.cover,
+              controller.signal,
+            );
+          } catch {
+            response.result.work.cover = null;
+            response.artworkError = true;
+          }
+        }
+      }
+      controller.signal.throwIfAborted();
       return response;
     } catch (error) {
       if (controller.signal.aborted)

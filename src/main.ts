@@ -534,6 +534,7 @@ app
     layout();
     emit();
     emitLibrary();
+    library.automatic.start();
     if (library.store.preferences().refreshOnOpen) void library.refresh();
   })
   .catch(() => app.quit());

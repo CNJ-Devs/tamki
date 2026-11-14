@@ -4,6 +4,31 @@ import type { Episode, LibraryState } from "../shared/model";
 const posters = new Map<string, string>();
 let probes = 0;
 const waiting: (() => void)[] = [];
+export function useArtwork(key?: string) {
+  const [value, setValue] = useState<{ key: string; url: string }>();
+  useEffect(() => {
+    let live = true;
+    if (key)
+      void window.tamki
+        .library<string>("cover", key)
+        .then((url) => {
+          if (live) setValue({ key, url });
+        })
+        .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [key]);
+  return value?.key === key ? value?.url : undefined;
+}
+export function Artwork({ cover }: { cover?: string }) {
+  const url = useArtwork(cover);
+  return url ? (
+    <img className="artwork-comparison" src={url} alt="" />
+  ) : (
+    <span>—</span>
+  );
+}
 function acquire() {
   return new Promise<() => void>((resolve) => {
     const begin = () => {
@@ -123,10 +148,15 @@ export function useLibraryDurations(state?: LibraryState) {
 export function Poster({
   episode,
   probe = true,
+  cover,
 }: {
   episode?: Episode;
   probe?: boolean;
+  cover?: string;
 }) {
+  const artwork = useArtwork(cover);
+  const [failedCover, setFailedCover] = useState<string>();
+  const coverImage = cover !== failedCover ? artwork : undefined;
   const ref = useRef<HTMLDivElement>(null);
   const key = episode ? `${episode.id}:${episode.modified}` : "";
   const [image, setImage] = useState(posters.get(key)),
@@ -143,7 +173,14 @@ export function Poster({
   }, []);
   useEffect(() => {
     setImage(posters.get(key));
-    if (!visible || !probe || !episode || episode.missing || posters.has(key))
+    if (
+      coverImage ||
+      !visible ||
+      !probe ||
+      !episode ||
+      episode.missing ||
+      posters.has(key)
+    )
       return;
     let disposed = false,
       video: HTMLVideoElement | undefined,
@@ -225,11 +262,15 @@ export function Poster({
       disposed = true;
       cleanup();
     };
-  }, [visible, key, probe]);
+  }, [visible, key, probe, coverImage]);
   return (
     <div ref={ref} className="poster">
-      {image ? (
-        <img src={image} alt="" />
+      {coverImage || image ? (
+        <img
+          src={coverImage || image}
+          alt=""
+          onError={() => setFailedCover(cover)}
+        />
       ) : (
         <FilmSlateIcon aria-hidden="true" />
       )}

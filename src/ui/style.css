@@ -2283,3 +2283,55 @@ h3 {
     padding: 8px;
   }
 }
+
+.automatic-setting,
+.card-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.automatic-setting {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.automatic-setting label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.recognition-indicator {
+  display: inline-flex;
+  color: var(--muted-foreground);
+}
+.recognition-indicator svg {
+  width: 16px;
+  height: 16px;
+}
+.recognition-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.artwork-comparison {
+  display: block;
+  height: 140px;
+  max-width: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.card-status,
+.recognition-status {
+  flex-shrink: 0;
+}
+.card-meta > .media-tags {
+  flex: 1;
+}
+.card-meta .media-tags [data-slot="badge"] {
+  flex-shrink: 1;
+}
+.card-meta .media-tags [data-slot="badge"]:last-child {
+  flex-shrink: 0;
+}

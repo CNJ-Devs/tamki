@@ -18,6 +18,7 @@ import { Checkbox } from "./components/ui/checkbox";
 import { FieldGroup } from "./components/ui/field";
 import { Textarea } from "./components/ui/textarea";
 import { errorMessage, useI18n } from "./i18n";
+import { Artwork } from "./media";
 import type { Work } from "../shared/model";
 import type { SettingsState } from "../shared/settings";
 import {
@@ -54,6 +55,8 @@ function Difference({
   change: MetadataChange;
   side: "before" | "after";
 }) {
+  if (change.field === "cover")
+    return <Artwork cover={String(change[side]) || undefined} />;
   const current = Array.isArray(change.before)
     ? change.before.join(" · ")
     : change.before;
@@ -301,6 +304,9 @@ export function RecognitionFlow({
             </label>
           </div>
           <Fade className="modal-body recognition-diff-body">
+            {response?.kind === "result" && response.artworkError && (
+              <p className="muted">{t("artworkUnavailable")}</p>
+            )}
             {!changes.length ? (
               <Blank title={t("noRecognitionChanges")} />
             ) : (

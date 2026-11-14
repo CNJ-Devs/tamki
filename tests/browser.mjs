@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { checkConnections } from "./connections.mjs";
+import { checkAutomaticRecognition } from "./automatic-recognition.mjs";
 import { checkRecognition } from "./recognition.mjs";
 import { checkSettings } from "./settings.mjs";
 const temporary = await mkdtemp(path.join(tmpdir(), "tamki-browser-"));
@@ -29,6 +30,53 @@ for (const target of [
   await cp("tests/fixtures/video.webm", path.join(media, target));
 await writeFile(path.join(media, "empty.mp4"), "");
 const server = createServer((req, res) => {
+  if (req.url === "/cover") {
+    res.writeHead(200, { "Content-Type": "image/png" });
+    res.end(
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXWsAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    );
+    return;
+  }
+  if (req.url?.startsWith("/metadata/")) {
+    const subject = {
+      id: 42,
+      name: "Automatic series",
+      summary: "Automatically identified work synopsis",
+      images: { large: "https://lain.bgm.tv/pic/cover/l/fixture.png" },
+    };
+    res.setHeader("Content-Type", "application/json");
+    if (req.url.includes("/search/")) {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () =>
+        res.end(
+          JSON.stringify({
+            data:
+              JSON.parse(body).keyword === "Automatic series" ? [subject] : [],
+          }),
+        ),
+      );
+    } else if (req.url.includes("/subjects/")) res.end(JSON.stringify(subject));
+    else
+      res.end(
+        JSON.stringify({
+          total: 1,
+          data: [
+            {
+              id: 420,
+              sort: 1,
+              type: 0,
+              name: "Opening episode",
+              desc: "Automatically identified episode synopsis",
+            },
+          ],
+        }),
+      );
+    return;
+  }
   if (req.url === "/v1/models") {
     res.setHeader("Content-Type", "application/json");
     if (req.headers.authorization !== "Bearer tamki-model-secret-fixture") {
@@ -142,6 +190,7 @@ async function launch() {
   await shell.locator(".page-header").waitFor();
   await shell.evaluate(async () => {
     const s = await window.tamki.library("state");
+    await window.tamki.library("recognition-preferences", { automatic: false });
     await window.tamki.library("preferences", {
       ...s.preferences,
       language: "en",
@@ -513,9 +562,28 @@ try {
   assert.equal((await state()).preferences.palette, "iris");
   await shell.waitForTimeout(300);
   await shell.screenshot({ path: "test-results/settings-narrow.png" });
+  const automaticCover = await checkAutomaticRecognition(
+    app,
+    shell,
+    temporary,
+    base,
+  );
   await app.close();
   await launch();
   snapshot = await state();
+  assert.equal(
+    snapshot.works.find((w) => w.title === "Automatic series").cover,
+    automaticCover,
+  );
+  await shell.waitForFunction(() =>
+    [...document.querySelectorAll(".poster img")].some(
+      (image) =>
+        image.src.startsWith("tamki-media://cover/") &&
+        image.complete &&
+        image.naturalWidth > 0,
+    ),
+  );
+  await shell.screenshot({ path: "test-results/automatic-recognition.png" });
   assert.equal(snapshot.preferences.palette, "iris");
   assert.equal(snapshot.settings.recognition.parser, "anitomy");
   assert.match(snapshot.settings.recognition.aiPrompt, /Fixture preference/);

@@ -209,6 +209,7 @@ export type SaveRule = z.infer<typeof saveRuleSchema>;
 export interface SettingsState {
   downloads: Record<"series" | "video", SaveRule>;
   recognition: {
+    automatic?: boolean;
     parser: "release" | "anitomy";
     defaultSourceId: string;
     aiPrompt: string;
@@ -223,6 +224,7 @@ export function defaultSettings(language: "en" | "zh"): SettingsState {
       video: { mode: "last", fixed: null, last: null },
     },
     recognition: {
+      automatic: true,
       parser: "release",
       defaultSourceId: "bangumi",
       aiPrompt: defaultPrompts[language],

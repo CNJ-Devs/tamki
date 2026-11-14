@@ -61,6 +61,7 @@ const editable = (work: Work) => ({
   title: work.title,
   description: work.description,
   tags: work.tags,
+  cover: work.cover,
   episodes: work.episodes.map(({ id, number, title, description }) => ({
     id,
     number,
@@ -169,6 +170,7 @@ export function MetadataEditor({
     title: value.title,
     description: value.description,
     tags: value.tags,
+    cover: value.cover,
     removedEpisodeIds: baseline.episodes
       .filter((e) => !value.episodes.some((current) => current.id === e.id))
       .map((e) => e.id),
@@ -182,11 +184,11 @@ export function MetadataEditor({
       description,
     })),
   });
-  const persist = async (value: Work) => {
-    const updated = await window.tamki.library<LibraryState>(
-      "edit",
-      editInput(value),
-    );
+  const persist = async (value: Work, metadataReviewed = false) => {
+    const updated = await window.tamki.library<LibraryState>("edit", {
+      ...editInput(value),
+      metadataReviewed,
+    });
     const saved = updated.works.find((w) => w.id === value.id) || value;
     setDraft(saved);
     setBaseline(editable(saved));
@@ -399,7 +401,7 @@ export function MetadataEditor({
           episodeId={episode?.id}
           draftInput={editInput(draft)}
           onApply={async (value) => {
-            await persist(value);
+            await persist(value, !episode);
             onBack();
           }}
           onClose={() => setRecognizing(false)}

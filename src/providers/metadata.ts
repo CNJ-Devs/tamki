@@ -14,6 +14,7 @@ const subject = z.object({
   name_cn: text,
   summary: text,
   date: text,
+  images: z.object({ large: text, common: text }).optional(),
   tags: z.array(z.object({ name: z.string().max(100) })).optional(),
 });
 const ep = z.object({
@@ -81,15 +82,13 @@ export async function builtinRecognition(
     );
   if (source === "bangumi") {
     if (!candidate) {
-      const response = z
-        .object({ data: z.array(subject).max(20) })
-        .parse(
-          await get("https://api.bgm.tv/v0/search/subjects?limit=20", {
-            keyword: input.title,
-            sort: "match",
-            filter: { type: [2, 6] },
-          }),
-        );
+      const response = z.object({ data: z.array(subject).max(20) }).parse(
+        await get("https://api.bgm.tv/v0/search/subjects?limit=20", {
+          keyword: input.title,
+          sort: "match",
+          filter: { type: [2, 6] },
+        }),
+      );
       return {
         kind: "candidates",
         candidates: response.data.map((s) => ({
@@ -97,6 +96,7 @@ export async function builtinRecognition(
           title: s.name_cn || s.name || String(s.id),
           description: s.summary || "",
           date: s.date || "",
+          aliases: [s.name_cn, s.name].filter((v): v is string => !!v),
         })),
       };
     }
@@ -164,6 +164,7 @@ export async function builtinRecognition(
                 title: clean(work.name_cn) || clean(work.name),
                 description: clean(work.summary),
                 tags: work.tags?.map((t) => t.name).slice(0, 12) || null,
+                cover: clean(work.images?.large) || clean(work.images?.common),
               },
         files: mapped,
       },
@@ -187,6 +188,8 @@ export async function builtinRecognition(
               media_type: z.string(),
               title: text,
               name: text,
+              original_name: text,
+              original_title: text,
               overview: text,
               release_date: text,
               first_air_date: text,
@@ -208,6 +211,9 @@ export async function builtinRecognition(
           title: s.title || s.name || String(s.id),
           description: s.overview || "",
           date: s.release_date || s.first_air_date || "",
+          aliases: [s.title, s.name, s.original_title, s.original_name].filter(
+            (v): v is string => !!v,
+          ),
         })),
     };
   }
@@ -219,6 +225,7 @@ export async function builtinRecognition(
       title: text,
       name: text,
       overview: text,
+      poster_path: text,
       genres: z.array(z.object({ name: z.string().max(100) })).optional(),
       seasons: z
         .array(
@@ -240,17 +247,20 @@ export async function builtinRecognition(
         title: [work.name, s.name].filter(Boolean).join(" · "),
         description: s.overview || "",
         date: s.air_date || "",
+        season: s.season_number,
       })),
     };
   }
   let files: RecognitionResult["files"] = [],
     title = work.title || work.name || null,
+    poster = work.poster_path,
     description = clean(work.overview);
   if (type === "tv") {
     const data = z
       .object({
         name: text,
         overview: text,
+        poster_path: text,
         episodes: z
           .array(
             z.object({
@@ -265,6 +275,7 @@ export async function builtinRecognition(
       .parse(await tmdb(`/tv/${id}/season/${season}`));
     title = [title, data.name].filter(Boolean).join(" · ");
     description = clean(data.overview) || description;
+    poster = data.poster_path || poster;
     files = matchEpisodes(
       input,
       data.episodes.map((e) => ({
@@ -287,6 +298,10 @@ export async function builtinRecognition(
               title,
               description,
               tags: work.genres?.map((g) => g.name) || null,
+              cover:
+                poster && /^\/[a-zA-Z0-9._-]+$/.test(poster)
+                  ? `https://image.tmdb.org/t/p/w500${poster}`
+                  : null,
             },
       files,
     },

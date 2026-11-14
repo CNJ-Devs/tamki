@@ -3,7 +3,7 @@ import { providers, type SourceConfig } from "../shared/settings";
 import {
   recognitionPrompt,
   recognitionSystem,
-  recognitionResultSchema,
+  recognitionOutputSchema,
   validateRecognition,
   type RecognitionInput,
   type RecognitionResponse,
@@ -161,7 +161,7 @@ export async function aiRecognition(
   const native =
     source.searchMode === "native" && source.provider !== "deepseek";
   let suffix: string, body: Record<string, unknown>;
-  const schema = z.toJSONSchema(recognitionResultSchema);
+  const schema = z.toJSONSchema(recognitionOutputSchema);
   delete schema.$schema;
   if (source.protocol === "responses") {
     suffix = "/responses";

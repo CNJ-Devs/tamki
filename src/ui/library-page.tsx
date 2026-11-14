@@ -9,6 +9,8 @@ import {
   PencilSimpleIcon,
   TrashIcon,
   StackIcon,
+  CircleNotchIcon,
+  InfoIcon,
 } from "@phosphor-icons/react";
 import {
   DndContext,
@@ -84,6 +86,80 @@ export function Tags({ tags }: { tags: string[] }) {
     </div>
   );
 }
+function RecognitionStatus({
+  work,
+  compact = false,
+  automatic = true,
+  onEdit,
+}: {
+  work: Work;
+  compact?: boolean;
+  automatic?: boolean;
+  onEdit?: () => void;
+}) {
+  const t = useI18n();
+  const state = work.recognition;
+  const busy = state?.status === "queued" || state?.status === "running";
+  const key: Message =
+    !automatic && (!state || busy)
+      ? "autoDisabled"
+      : !state
+        ? "autoQueued"
+        : (
+            {
+              queued: "autoQueued",
+              running: "autoRunning",
+              complete: "autoComplete",
+              "needs-choice": "autoChoice",
+              failed: "autoFailed",
+              local: "autoLocal",
+            } as const
+          )[state.status];
+  if (state?.status === "complete" && !state.artworkError) return null;
+  const message = state?.artworkError ? t("artworkUnavailable") : t(key);
+  if (compact)
+    return state && (state.status !== "complete" || state.artworkError) ? (
+      <Tip text={message}>
+        <span
+          className="recognition-indicator"
+          tabIndex={0}
+          aria-label={message}
+        >
+          {busy && automatic ? (
+            <CircleNotchIcon className="spin" />
+          ) : (
+            <InfoIcon />
+          )}
+        </span>
+      </Tip>
+    ) : null;
+  return (
+    <div className="recognition-status">
+      <span className="muted" role="status">
+        {message}
+        {state?.error ? ` · ${errorMessage(new Error(state.error), t)}` : ""}
+      </span>
+      {state?.status === "needs-choice" && (
+        <Button variant="secondary" size="sm" onClick={onEdit}>
+          {t("recognizeWork")}
+        </Button>
+      )}
+      {automatic && (state?.status === "failed" || state?.artworkError) && (
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() =>
+            void window.tamki
+              .library("retry-recognition", work.id)
+              .catch((e) => toast.error(errorMessage(e, t)))
+          }
+        >
+          {t("retryRecognition")}
+        </Button>
+      )}
+    </div>
+  );
+}
 function MediaCard({
   work,
   state,
@@ -117,7 +193,11 @@ function MediaCard({
         onClick={() => !drag.isDragging && onOpen()}
         aria-label={work.title}
       >
-        <Poster episode={work.episodes[0]} probe={source?.type === "local"} />
+        <Poster
+          cover={work.cover}
+          episode={work.episodes[0]}
+          probe={source?.type === "local"}
+        />
         <div className="card-progress">
           <i style={{ width: `${ratio * 100}%` }} />
         </div>
@@ -126,7 +206,14 @@ function MediaCard({
         <button className="truncate" onClick={onOpen}>
           <TextTip>{work.title}</TextTip>
         </button>
-        <span className="percent">{Math.floor(ratio * 100)}%</span>
+        <span className="card-status">
+          <RecognitionStatus
+            work={work}
+            compact
+            automatic={state.settings.recognition.automatic !== false}
+          />
+          <span className="percent">{Math.floor(ratio * 100)}%</span>
+        </span>
       </div>
       <div className="card-meta">
         <span className="card-count">
@@ -513,7 +600,11 @@ export function DetailPage({
       </PageHeader>
       <Fade className="page-body">
         <div className="detail-hero">
-          <Poster episode={work.episodes[0]} probe={source?.type === "local"} />
+          <Poster
+            cover={work.cover}
+            episode={work.episodes[0]}
+            probe={source?.type === "local"}
+          />
           <div className="detail-info">
             <InlineSynopsis
               text={work.description}
@@ -531,6 +622,11 @@ export function DetailPage({
               <TextTip>{`${source?.name || t("offline")} · ${work.path}`}</TextTip>
             </div>
             <Tags tags={work.tags} />
+            <RecognitionStatus
+              work={work}
+              automatic={state.settings.recognition.automatic !== false}
+              onEdit={onEdit}
+            />
           </div>
         </div>
         <div className="episode-list">

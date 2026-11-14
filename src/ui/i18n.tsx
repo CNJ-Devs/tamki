@@ -1,6 +1,20 @@
 import { createContext, useContext } from "react";
 import type { Language } from "../shared/model";
 export const en = {
+  retryRecognition: "Retry identification",
+  cover: "Cover",
+  automaticRecognition: "Identify new media automatically",
+  retryUnidentified: "Retry incomplete recognition",
+  autoQueued: "Waiting for identification",
+  autoRunning: "Identifying metadata",
+  autoComplete: "Metadata identified",
+  autoChoice: "Confirm the matching work",
+  autoFailed: "Identification failed",
+  autoLocal: "Filename only · no online metadata",
+  autoDisabled: "Automatic identification is off",
+  artworkUnavailable:
+    "Cover unavailable. Other information is still available.",
+
   scanDepth: "Scan depth",
   scanCurrent: "Current folder only",
   scanOneLevel: "1 level below",
@@ -301,6 +315,19 @@ export const en = {
 };
 export type Message = keyof typeof en;
 export const zh: Record<Message, string> = {
+  retryRecognition: "重试识别",
+  cover: "封面",
+  automaticRecognition: "自动识别新入库内容",
+  retryUnidentified: "重试未完成识别",
+  autoQueued: "等待识别",
+  autoRunning: "正在识别信息",
+  autoComplete: "已识别信息",
+  autoChoice: "需要确认匹配作品",
+  autoFailed: "识别失败",
+  autoLocal: "仅解析文件名 · 无联网信息",
+  autoDisabled: "自动识别已关闭",
+  artworkUnavailable: "封面暂时无法获取，其他信息仍可使用。",
+
   scanDepth: "扫描层级",
   scanCurrent: "仅当前目录",
   scanOneLevel: "向下 1 层",
