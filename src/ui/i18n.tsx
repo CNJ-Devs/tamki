@@ -1,6 +1,46 @@
 import { createContext, useContext } from "react";
 import type { Language } from "../shared/model";
 export const en = {
+  scanDepth: "Scan depth",
+  scanCurrent: "Current folder only",
+  scanOneLevel: "1 level below",
+  scanLevels: "{n} levels below",
+  scanCustom: "Custom",
+  scanDepthHelp:
+    "The selected folder is level 0. Scan videos down to this depth (0–32), including folders that contain both videos and subfolders.",
+  filenameSource: "Filename",
+  notConfigured: "Not configured",
+  recognizeWork: "Identify work",
+  recognizeEpisode: "Identify this episode",
+  recognitionSource: "Recognition source",
+  compareRecognition: "Compare information",
+  recognizing: "Identifying…",
+  applyAndSave: "Apply and save",
+  selectAllChanges: "Apply all changes",
+  applyField: "Apply",
+  currentInformation: "Current",
+  newInformation: "New",
+  noRecognitionChanges: "No changes found",
+  unmatchedUnchanged: "Unmatched files keep their current information.",
+  tmdbCredentials: "TMDB credentials",
+  tmdbToken: "API Read Access Token",
+  tmdbKeyRequired: "Configure a TMDB API Read Access Token first.",
+  recognitionSourceMissing: "This recognition source is no longer available.",
+  recognitionFailed:
+    "Recognition failed. Check the service and model settings.",
+  recognitionInvalid:
+    "The service returned an invalid result. No information was changed.",
+  recognitionScopeInvalid:
+    "The result contains mismatched files or information outside this request. Nothing was changed.",
+  recognitionTruncated:
+    "The result was cut short. Increase the output token limit or identify fewer files.",
+  recognitionTooLarge:
+    "The response is too large. Identify a smaller selection.",
+  recognitionBusy: "Wait for another recognition request to finish.",
+  recognitionCancelled: "Recognition cancelled.",
+  sourceRateLimited: "The service rate limit was reached. Try again later.",
+  searchFailed: "Web search failed. Check search permissions and settings.",
+
   downloads: "Downloads",
   seriesLocation: "Series save location",
   videoLocation: "Video save location",
@@ -9,8 +49,8 @@ export const en = {
   noPreviousLocation: "No previous selection",
   recognition: "Information recognition",
   filenameParser: "Filename parser",
-  parserGeneral: "General · GuessIt",
-  parserAnime: "Anime · Anitopy",
+  parserGeneral: "General · video-filename-parser",
+  parserAnime: "Anime · Anitomy",
   defaultSource: "Default recognition source",
   customSources: "Custom sources",
   addSource: "Add source",
@@ -77,7 +117,7 @@ export const en = {
   secureStorageUnavailable:
     "Secure credential storage is unavailable. Unlock the system key store and try again.",
   parserHelp:
-    "GuessIt handles general movie and series filenames; Anitopy handles anime filenames and release tags.",
+    "video-filename-parser extracts movie and series release names; Anitomy handles anime filenames. These local parsers do not fetch synopses.",
 
   library: "Library",
   tasks: "Tasks",
@@ -118,6 +158,7 @@ export const en = {
   emptyLibrary: "Your library is empty",
   addConnection: "Add connection",
   storageConnections: "Storage connections",
+  noConnections: "No storage connections",
   appearance: "Appearance",
   palette: "Palette",
   mode: "Appearance mode",
@@ -260,6 +301,43 @@ export const en = {
 };
 export type Message = keyof typeof en;
 export const zh: Record<Message, string> = {
+  scanDepth: "扫描层级",
+  scanCurrent: "仅当前目录",
+  scanOneLevel: "向下 1 层",
+  scanLevels: "向下 {n} 层",
+  scanCustom: "自定义",
+  scanDepthHelp:
+    "所选目录为第 0 层。向下扫描指定层数（0–32），当前目录有视频也会继续扫描子目录。",
+  filenameSource: "文件名",
+  notConfigured: "未配置",
+  recognizeWork: "识别整部作品",
+  recognizeEpisode: "识别此集",
+  recognitionSource: "识别来源",
+  compareRecognition: "比较信息",
+  recognizing: "正在识别…",
+  applyAndSave: "应用并保存",
+  selectAllChanges: "应用全部变更",
+  applyField: "应用",
+  currentInformation: "当前信息",
+  newInformation: "识别结果",
+  noRecognitionChanges: "没有可应用的变更",
+  unmatchedUnchanged: "未匹配的分集保留当前信息。",
+  tmdbCredentials: "TMDB 授权",
+  tmdbToken: "API 读取访问令牌",
+  tmdbKeyRequired: "请先配置 TMDB API 读取访问令牌。",
+  recognitionSourceMissing: "这个识别来源已不可用。",
+  recognitionFailed: "识别失败，请检查服务和模型配置。",
+  recognitionInvalid: "服务返回的结果格式不正确，未修改任何信息。",
+  recognitionScopeInvalid:
+    "结果包含不匹配的文件或超出本次范围的信息，未作修改。",
+  recognitionTruncated:
+    "识别结果被截断，请提高输出 token 上限或减少单次识别的文件。",
+  recognitionTooLarge: "返回内容过大，请减少单次识别范围。",
+  recognitionBusy: "请等待其他识别请求完成。",
+  recognitionCancelled: "已取消识别。",
+  sourceRateLimited: "服务请求达到限额，请稍后再试。",
+  searchFailed: "联网搜索失败，请检查搜索权限和配置。",
+
   downloads: "下载",
   seriesLocation: "剧集保存位置",
   videoLocation: "视频保存位置",
@@ -268,8 +346,8 @@ export const zh: Record<Message, string> = {
   noPreviousLocation: "尚无记录",
   recognition: "信息识别",
   filenameParser: "文件名解析",
-  parserGeneral: "通用 · GuessIt",
-  parserAnime: "动画 · Anitopy",
+  parserGeneral: "通用 · video-filename-parser",
+  parserAnime: "动画 · Anitomy",
   defaultSource: "默认识别来源",
   customSources: "自定义来源",
   addSource: "添加来源",
@@ -331,7 +409,7 @@ export const zh: Record<Message, string> = {
   modelListFailed: "无法获取模型，请检查服务地址和连接。",
   secureStorageUnavailable: "系统安全凭据存储不可用，请解锁系统钥匙串后重试。",
   parserHelp:
-    "GuessIt 解析常见电影、剧集文件名；Anitopy 处理动画文件名及发布组等信息。",
+    "video-filename-parser 解析通用影视文件名；Anitomy 解析动画文件名。两者均在本地运行，不负责联网获取简介。",
 
   library: "片库",
   tasks: "任务",
@@ -372,6 +450,7 @@ export const zh: Record<Message, string> = {
   emptyLibrary: "片库还是空的",
   addConnection: "添加连接",
   storageConnections: "存储连接",
+  noConnections: "暂无存储连接",
   appearance: "外观",
   palette: "配色",
   mode: "显示模式",

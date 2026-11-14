@@ -14,24 +14,29 @@ Uses Electron 45.3.1, Chromium, TypeScript, React, shadcn/Radix, Phosphor Regula
 
 - Compact browser tabs with a pinned Home/library tab; on macOS, tabs share a row with native window controls. Settings and tasks are secondary pages.
 - Real HTTP(S) browsing, navigation history, website popups in tabs and isolated persistent website sessions.
-- Local storage connections with multiple native-selected folders. Scans include videos directly in each root and its immediate child directories.
+- Local storage connections with multiple native-selected folders. Each media folder has its own finite scan depth (0–32). New folders default to 3; existing folders retain depth 1. Mixed folders continue scanning within that boundary; overlapping roots reuse directory reads and deduplicate files. Reducing scope does not remove cached items.
 - SQLite indexing, explicit/background refresh, partial-failure retention and persistent scan exclusions. Removing library entries never deletes their files; explicit manual addition can restore them.
 - Search, watch-state filters, source/tag grouping, sorting, custom ordering and overlapping, non-nested collections.
 - Work and episode editing, independent episode number/title fields, episode ordering/removal, cross-storage episode appending and tags. File paths are never renamed by metadata edits.
+- Metadata identification from Bangumi, TMDB (with a user-supplied read access token), local filename parsers and configured AI sources. Whole-work and single-episode flows include cancellation, candidate selection, field-level comparison and selective application. Uncertain/unmatched data is preserved; metadata edits do not rename files.
 - Player tabs with real local media, byte-range seeking, resume history, automatic next episode, transport/speed/volume controls, fullscreen and mini player. Picture in picture uses Chromium's platform API where available.
 - Real website-attachment task records with progress and live pause/resume/cancel. Interrupted tasks remain visible after restart; automatic transfer recovery is not implemented.
 - Six semantic palettes, light/dark/system modes and English/Simplified Chinese.
 - Persistent series/video save preferences, a unified recognition-source selector, provider-specific custom-source configuration and a global prompt editor with atomic variable chips and tooltips. Model discovery uses the selected provider's API; credentials are encrypted with the OS-backed Electron safe storage and never returned to the interface.
 
-**This is not the complete product.** Website video detection, Bilibili/series downloading, storage migration, AI/search metadata recognition, additional cloud providers and production update/installer distribution are still pending.
+**This is not the complete product.** Website video detection, Bilibili/series downloading, storage migration, automatic metadata scraping/artwork, additional cloud providers and production update/installer distribution are still pending.
 
-The download and recognition settings currently save configuration. The filename-parser choice, retrieval/search options and prompt are not yet connected to a recognition execution pipeline, and save preferences are not yet applied to the future video/series download workflow. Model discovery supports OpenAI, DeepSeek, Anthropic, Gemini and OpenAI-compatible endpoints; it verifies model listing, not inference or search entitlement. Compatible endpoints must use HTTPS, except for local loopback servers. API keys are sent only to their configured endpoint, without following redirects. If secure credential storage is unavailable, saving a key fails instead of falling back to plaintext.
+Recognition now executes through provider-specific adapters: OpenAI Responses, Anthropic Messages, Gemini GenerateContent and DeepSeek/OpenAI-compatible Chat Completions. Search uses OpenAI/Anthropic/Gemini hosted tools or the explicit DeepSeek Search & Fetch protocol (also available independently for compatible endpoints). Source protocols and full request → comparison → save flows are tested against local fixtures, not live paid accounts. Bangumi search, subject selection and episode title/synopsis retrieval have also been checked with a public title in a temporary profile. Long file lists are batched, and truncated batches retry with fewer files; no partial result is automatically applied. Requests use Chromium’s network stack and system proxy settings. A listed model does not guarantee inference/search entitlement or support for every configured limit. API/model errors are reported without silently changing providers.
+
+Filename parsing uses the actual open-source video-filename-parser and Anitomy implementations. Older unused GuessIt/Anitopy settings migrate to their corresponding supported parser. Matching uses filenames and stable file IDs, never editable episode numbers or array positions. Work/episode recognition scope is enforced in the main process. Unknown values do not clear existing information. Built-in matching leaves ambiguous episode identities untouched.
+
+Compatible endpoints require HTTPS except for local loopback services. Credentials use OS-backed encrypted storage and are sent only to their configured service without following redirects. Download save preferences remain configuration for the future video/series download workflow.
 
 ### Storage setup
 
 Open **Home → Settings → Add connection**. Local folders use the operating system picker; select multiple folders and save to scan them. Network folders mounted by the OS can use this path, subject to the mount being available.
 
-**ZSpace is an experimental read-only adapter to the separately installed [official ZSpace NAS Agent Toolkit](https://download.zspace.cn/), tested against its 0.3.11 command contracts.** Tamki detects the toolkit's standard runtime cache or lets you locate its CLI. It starts a dedicated OAuth profile; complete authorization in the browser and enter the one-time code in Tamki, then choose media folders from the directory browser. The code travels only through the active child process's stdin, and the CLI is instructed to use the system credential store. Tamki does not bundle the toolkit, borrow an existing account profile, or implement a private OAuth client.
+**ZSpace is an experimental read-only adapter to the separately installed [official ZSpace NAS Agent Toolkit](https://download.zspace.cn/), tested against its 0.3.11 command contracts.** Tamki detects the toolkit's standard runtime cache or lets you locate its CLI. It starts a dedicated OAuth profile; complete authorization in the browser and enter the one-time code in Tamki, then choose media folders and their scan depths from the directory browser. The code travels only through the active child process's stdin, and the CLI is instructed to use the system credential store. Tamki does not bundle the toolkit, borrow an existing account profile, or implement a private OAuth client.
 
 The directory adapter and a 1 MiB media read have been checked against a real NAS. End-to-end fresh authorization and sustained remote playback in the packaged app still need live validation. CLI-mediated reads have per-request overhead and do not establish high-bitrate streaming performance or full-file version consistency. This is not a completed production NAS integration.
 
@@ -61,7 +66,7 @@ npm run test:browser
 npm run package
 ```
 
-The integration suite uses local HTTP pages, a generated WebM fixture and temporary profiles. It covers browser isolation, native picker grants, scanning, editing, media ranges, playback, responsive controls and restart persistence, without real accounts. Packaging writes a development bundle for the current platform to `packages/`; it has no Developer ID signing or Apple notarization.
+The integration suite uses local HTTP pages, a generated WebM fixture and temporary profiles. It covers browser isolation, native picker grants, scan depth, identification/comparison/cancellation, editing, media ranges, playback, responsive controls and restart persistence, without real accounts. Packaging writes a development bundle for the current platform to `packages/`; it has no Developer ID signing or Apple notarization.
 
 Validated locally on macOS Apple Silicon. Windows and Linux source paths are present, but native runtime behavior has not yet been validated there.
 

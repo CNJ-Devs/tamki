@@ -406,9 +406,7 @@ export function SourceEditor({
                     : null}
                   {searching &&
                   source.readPages &&
-                  (standalone ||
-                    source.provider === "anthropic" ||
-                    source.provider === "gemini")
+                  (standalone || source.provider === "anthropic")
                     ? number("maxPages", "maxPages", 1, 20)
                     : null}
                   {searching &&

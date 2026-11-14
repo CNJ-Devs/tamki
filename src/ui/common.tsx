@@ -271,12 +271,14 @@ export function PageHeader({
 export function Blank({
   title,
   children,
+  size = "page",
 }: {
   title: string;
   children?: ReactNode;
+  size?: "page" | "section";
 }) {
   return (
-    <Empty>
+    <Empty data-size={size}>
       <EmptyHeader>
         <EmptyTitle>{title}</EmptyTitle>
       </EmptyHeader>

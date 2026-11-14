@@ -6,8 +6,9 @@ import { Readable } from "node:stream";
 import path from "node:path";
 import os from "node:os";
 import { z } from "zod";
+import { RecognitionService } from "./recognition";
 import { LibraryStore } from "./store";
-import { scanRoot } from "./scan";
+import { scanScopes } from "./scan";
 import { LocalProvider } from "../providers/local";
 import { ZSpaceCLI, ZSpaceProvider } from "../providers/zspace";
 import {
@@ -41,6 +42,7 @@ interface Draft {
 export class LibraryService {
   readonly store: LibraryStore;
   readonly settings: SettingsService;
+  readonly recognition: RecognitionService;
   private refreshing = false;
   private refreshTask?: Promise<void>;
   private controller = new AbortController();
@@ -53,6 +55,7 @@ export class LibraryService {
       app.getLocale().startsWith("zh") ? "zh" : "en",
     );
     this.settings = new SettingsService(this.store);
+    this.recognition = new RecognitionService(this.store, this.settings);
   }
   snapshot() {
     return this.store.snapshot(this.refreshing);
@@ -152,19 +155,16 @@ export class LibraryService {
         let failed = false;
         try {
           const provider = await this.provider(connection);
-          for (const root of connection.roots) {
-            try {
-              const result = await scanRoot(
-                provider,
-                root,
-                this.controller.signal,
-              );
-              this.store.applyScan(connection.id, root, result);
-              failed ||= result.failures.length > 0;
-            } catch {
-              failed = true;
-            }
-          }
+          const result = await scanScopes(
+            provider,
+            connection.roots.map((root) => ({
+              root,
+              depth: connection.scanDepths?.[root] ?? 1,
+            })),
+            this.controller.signal,
+          );
+          this.store.applyScan(connection.id, connection.roots[0], result);
+          failed = result.failures.length > 0;
           this.store.saveConnection({
             ...connection,
             status: failed ? "offline" : "connected",
@@ -189,6 +189,40 @@ export class LibraryService {
   }
   async request(type: string, value: unknown): Promise<unknown> {
     switch (type) {
+      case "recognize":
+        return this.recognition.run(value, async (input) => {
+          const additions = [];
+          for (const connectionId of new Set(
+            input.attachments.map((a) => a.connectionId),
+          )) {
+            const files = await this.selectedFiles(
+              connectionId,
+              input.attachments
+                .filter((a) => a.connectionId === connectionId)
+                .map((a) => a.path),
+            );
+            additions.push(
+              ...this.store.prepareEpisodes(input.id, connectionId, files),
+            );
+          }
+          return additions;
+        });
+      case "cancel-recognition":
+        this.recognition.cancel(id.parse(value));
+        return true;
+      case "open-citation": {
+        const url = z.string().url().max(8192).parse(value),
+          parsed = new URL(url);
+        if (
+          !["https:", "http:"].includes(parsed.protocol) ||
+          parsed.username ||
+          parsed.password
+        )
+          throw new ProviderError("invalidInput");
+        await systemShell.openExternal(url);
+        return true;
+      }
+      case "tmdb-credentials":
       case "recognition-preferences":
       case "source-models":
       case "save-source":
@@ -410,6 +444,15 @@ export class LibraryService {
           name: input.name,
           type: source.type,
           roots: normalized,
+          scanDepths: Object.fromEntries(
+            normalized.map((root) => [
+              root,
+              input.scanDepths?.[root] ??
+                (previous?.roots.includes(root)
+                  ? (previous.scanDepths?.[root] ?? 1)
+                  : 3),
+            ]),
+          ),
           browseRoots:
             ("browseRoots" in source && source.browseRoots) || source.roots,
           status: "connected",
@@ -645,6 +688,7 @@ export class LibraryService {
     });
   }
   async close() {
+    this.recognition.close();
     this.controller.abort();
     this.cli?.close();
     await this.refreshTask;

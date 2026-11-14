@@ -1,4 +1,4 @@
-import { safeStorage } from "electron";
+import { net, safeStorage } from "electron";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { LibraryStore } from "./store";
@@ -21,9 +21,14 @@ export class SettingsService {
   constructor(private store: LibraryStore) {}
   snapshot(): SettingsState {
     const config = this.store.config("settings");
-    return config
+    const result = config
       ? JSON.parse(config)
       : defaultSettings(this.store.preferences().language);
+    if (result.recognition.parser === "guessit")
+      result.recognition.parser = "release";
+    if (result.recognition.parser === "anitopy")
+      result.recognition.parser = "anitomy";
+    return result;
   }
   save(value: SettingsState) {
     this.store.setConfig("settings", JSON.stringify(value));
@@ -37,7 +42,7 @@ export class SettingsService {
       throw new ProviderError("secureStorageUnavailable");
     return safeStorage.encryptString(value).toString("base64");
   }
-  private secret(id: string, kind: "key" | "search"): string {
+  secret(id: string, kind: "key" | "search"): string {
     const value = this.store.config(`source:${id}:${kind}`);
     if (!value) return "";
     try {
@@ -63,10 +68,26 @@ export class SettingsService {
   async request(type: string, value: unknown) {
     const settings = this.snapshot();
     switch (type) {
+      case "tmdb-credentials": {
+        const token = z
+          .string()
+          .trim()
+          .max(8192)
+          .refine((v) => !/[\r\n\0]/.test(v))
+          .parse(value);
+        settings.recognition.tmdbConfigured = !!token;
+        if (!token && settings.recognition.defaultSourceId === "tmdb")
+          settings.recognition.defaultSourceId = "bangumi";
+        this.store.setConfigs({
+          "source:tmdb:key": token ? this.protect(token) : "",
+          settings: JSON.stringify(settings),
+        });
+        return;
+      }
       case "recognition-preferences": {
         const patch = z
           .object({
-            parser: z.enum(["guessit", "anitopy"]).optional(),
+            parser: z.enum(["release", "anitomy"]).optional(),
             defaultSourceId: id.optional(),
             aiPrompt: promptSchema.optional(),
           })
@@ -75,12 +96,18 @@ export class SettingsService {
         if (
           patch.defaultSourceId &&
           ![
+            "filename",
             "tmdb",
             "bangumi",
             ...settings.recognition.sources.map((s) => s.id),
           ].includes(patch.defaultSourceId)
         )
           throw new ProviderError("invalidInput");
+        if (
+          patch.defaultSourceId === "tmdb" &&
+          !settings.recognition.tmdbConfigured
+        )
+          throw new ProviderError("tmdbKeyRequired");
         settings.recognition = { ...settings.recognition, ...patch };
         this.save(settings);
         return;
@@ -114,7 +141,11 @@ export class SettingsService {
           throw new ProviderError("keyRequired");
         const fingerprint = this.fingerprint(source, key);
         if (type === "source-models") {
-          const models = await discoverModels(source, key);
+          const models = await discoverModels(
+            source,
+            key,
+            net.fetch.bind(net) as typeof fetch,
+          );
           if (this.catalogs.size > 100) this.catalogs.clear();
           this.catalogs.set(fingerprint, models);
           return models;

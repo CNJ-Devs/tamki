@@ -13,7 +13,10 @@ import {
   FormField,
   IconButton,
   Blank,
+  Modal,
 } from "./common";
+import { Input } from "./components/ui/input";
+import { recognitionOptions } from "./recognition-flow";
 import { FieldGroup } from "./components/ui/field";
 import { SourceEditor } from "./source-editor";
 import { PromptDialog } from "./prompt-editor";
@@ -35,6 +38,9 @@ export function RecognitionSettings({
   const [editing, setEditing] = useState<CustomSource | null>(null),
     [prompt, setPrompt] = useState(false),
     [remove, setRemove] = useState<CustomSource | null>(null);
+  const [credentials, setCredentials] = useState(false),
+    [token, setToken] = useState(""),
+    [tokenBusy, setTokenBusy] = useState(false);
   const update = (patch: Partial<Omit<typeof config, "sources">>) =>
     window.tamki.library("recognition-preferences", patch);
   const apply = (patch: Partial<Omit<typeof config, "sources">>) =>
@@ -50,8 +56,8 @@ export function RecognitionSettings({
               apply({ parser: parser as typeof config.parser })
             }
             options={[
-              { value: "guessit", label: t("parserGeneral") },
-              { value: "anitopy", label: t("parserAnime") },
+              { value: "release", label: t("parserGeneral") },
+              { value: "anitomy", label: t("parserAnime") },
             ]}
           />
           <IconButton label={t("parserHelp")}>
@@ -60,69 +66,131 @@ export function RecognitionSettings({
         </div>
       </FormField>
       <FormField label={t("defaultSource")}>
-        <Choice
-          label={t("defaultSource")}
-          value={config.defaultSourceId}
-          onChange={(defaultSourceId) => apply({ defaultSourceId })}
-          options={[
-            { value: "tmdb", label: "TMDB" },
-            { value: "bangumi", label: "Bangumi" },
-            ...config.sources.map((s) => ({ value: s.id, label: s.name })),
-          ]}
-        />
-      </FormField>
-      <div className="section-heading source-heading">
-        <h3>{t("customSources")}</h3>
-        <div className="actions">
-          <Button variant="secondary" onClick={() => setPrompt(true)}>
-            {t("aiPrompt")}
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={() =>
-              setEditing({
-                ...newSource(),
-                hasKey: false,
-                hasSearchKey: false,
-                models: [],
-              })
-            }
+        <div className="field-control-row">
+          <Choice
+            label={t("defaultSource")}
+            value={config.defaultSourceId}
+            onChange={(defaultSourceId) => apply({ defaultSourceId })}
+            options={recognitionOptions(
+              config,
+              t("filenameSource"),
+              t("notConfigured"),
+            )}
+          />
+          <IconButton
+            label={t("tmdbCredentials")}
+            onClick={() => setCredentials(true)}
           >
-            <PlusIcon data-icon="inline-start" />
-            {t("addSource")}
-          </Button>
+            <PencilSimpleIcon />
+          </IconButton>
         </div>
+      </FormField>
+      <div className="settings-list">
+        <div className="section-heading source-heading">
+          <h3>{t("customSources")}</h3>
+          <div className="actions">
+            <Button variant="secondary" onClick={() => setPrompt(true)}>
+              {t("aiPrompt")}
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() =>
+                setEditing({
+                  ...newSource(),
+                  hasKey: false,
+                  hasSearchKey: false,
+                  models: [],
+                })
+              }
+            >
+              <PlusIcon data-icon="inline-start" />
+              {t("addSource")}
+            </Button>
+          </div>
+        </div>
+        {config.sources.length ? (
+          <div>
+            {config.sources.map((s) => (
+              <div className="connection-row" key={s.id}>
+                <div className="connection-icon">
+                  <PlugsConnectedIcon />
+                </div>
+                <div className="connection-copy">
+                  <strong>{s.name}</strong>
+                  <span className="muted">
+                    {s.provider === "openai-compatible"
+                      ? t("compatibleProvider")
+                      : providers.find((p) => p.id === s.provider)?.name}{" "}
+                    · {s.model}
+                  </span>
+                </div>
+                <IconButton
+                  label={t("editSource")}
+                  onClick={() => setEditing(s)}
+                >
+                  <PencilSimpleIcon />
+                </IconButton>
+                <IconButton
+                  label={t("removeSource")}
+                  onClick={() => setRemove(s)}
+                >
+                  <TrashIcon />
+                </IconButton>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <Blank title={t("noCustomSources")} size="section" />
+        )}
       </div>
-      {config.sources.length ? (
-        <div>
-          {config.sources.map((s) => (
-            <div className="connection-row" key={s.id}>
-              <div className="connection-icon">
-                <PlugsConnectedIcon />
-              </div>
-              <div className="connection-copy">
-                <strong>{s.name}</strong>
-                <span className="muted">
-                  {s.provider === "openai-compatible"
-                    ? t("compatibleProvider")
-                    : providers.find((p) => p.id === s.provider)?.name}{" "}
-                  · {s.model}
-                </span>
-              </div>
-              <IconButton label={t("editSource")} onClick={() => setEditing(s)}>
-                <PencilSimpleIcon />
-              </IconButton>
-              <IconButton
-                label={t("removeSource")}
-                onClick={() => setRemove(s)}
+      {credentials && (
+        <Modal
+          open
+          title={t("tmdbCredentials")}
+          onClose={() => !tokenBusy && setCredentials(false)}
+          footer={
+            <>
+              <Button
+                variant="secondary"
+                disabled={tokenBusy}
+                onClick={() => setCredentials(false)}
               >
-                <TrashIcon />
-              </IconButton>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <Blank title={t("noCustomSources")} />
+                {t("cancel")}
+              </Button>
+              <Button
+                disabled={tokenBusy || !token.trim()}
+                onClick={() => {
+                  setTokenBusy(true);
+                  void window.tamki
+                    .library("tmdb-credentials", token)
+                    .then(() => {
+                      setToken("");
+                      setCredentials(false);
+                    })
+                    .catch((e) => toast.error(errorMessage(e, t)))
+                    .finally(() => setTokenBusy(false));
+                }}
+              >
+                {t("save")}
+              </Button>
+            </>
+          }
+        >
+          <div className="modal-body">
+            <FieldGroup>
+              <FormField label={t("tmdbToken")} htmlFor="tmdb-token">
+                <Input
+                  id="tmdb-token"
+                  type="password"
+                  value={token}
+                  placeholder={config.tmdbConfigured ? t("configured") : ""}
+                  onChange={(e) => setToken(e.target.value)}
+                  autoComplete="off"
+                />
+              </FormField>
+            </FieldGroup>
+          </div>
+        </Modal>
       )}
       {editing ? (
         <SourceEditor

@@ -209,10 +209,11 @@ export type SaveRule = z.infer<typeof saveRuleSchema>;
 export interface SettingsState {
   downloads: Record<"series" | "video", SaveRule>;
   recognition: {
-    parser: "guessit" | "anitopy";
+    parser: "release" | "anitomy";
     defaultSourceId: string;
     aiPrompt: string;
     sources: CustomSource[];
+    tmdbConfigured?: boolean;
   };
 }
 export function defaultSettings(language: "en" | "zh"): SettingsState {
@@ -222,7 +223,7 @@ export function defaultSettings(language: "en" | "zh"): SettingsState {
       video: { mode: "last", fixed: null, last: null },
     },
     recognition: {
-      parser: "guessit",
+      parser: "release",
       defaultSourceId: "bangumi",
       aiPrompt: defaultPrompts[language],
       sources: [],

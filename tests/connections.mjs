@@ -48,6 +48,13 @@ if (args.includes('login')) {
     .getByRole("checkbox", { name: "Choose folder", exact: true })
     .click();
   await dialog.getByLabel("Name", { exact: true }).fill("Fixture NAS");
+  await dialog
+    .getByRole("combobox", { name: "Scan depth · /Drive1/Media", exact: true })
+    .click();
+  await shell.getByRole("option", { name: "Custom", exact: true }).click();
+  await dialog
+    .getByRole("spinbutton", { name: "Scan depth", exact: true })
+    .fill("7");
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   await dialog.waitFor({ state: "hidden" });
   await shell
@@ -64,6 +71,7 @@ if (args.includes('login')) {
     ),
   );
   assert.deepEqual(connection.roots, ["/Drive1/Media"]);
+  assert.equal(connection.scanDepths["/Drive1/Media"], 7);
   await shell
     .locator(".connection-row")
     .filter({ hasText: "Fixture NAS" })
@@ -71,6 +79,12 @@ if (args.includes('login')) {
     .click();
   await dialog.getByRole("button", { name: "/Drive1", exact: true }).click();
   await dialog.getByRole("button", { name: "Archive", exact: true }).waitFor();
+  assert.equal(
+    await dialog
+      .getByRole("spinbutton", { name: "Scan depth", exact: true })
+      .inputValue(),
+    "7",
+  );
   await dialog.getByRole("button", { name: "Back", exact: true }).click();
   await dialog.getByRole("button", { name: "/Drive2", exact: true }).click();
   await dialog

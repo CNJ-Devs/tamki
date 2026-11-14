@@ -354,6 +354,19 @@ h3 {
 [data-slot="empty-content"] {
   gap: 12px;
 }
+[data-slot="empty"][data-size="section"] {
+  min-height: 0;
+  flex: none;
+  align-items: flex-start;
+  padding: 16px 0;
+  text-align: left;
+}
+[data-slot="empty"][data-size="section"] [data-slot="empty-title"] {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 20px;
+  color: var(--secondary);
+}
 .fade-scroll {
   --fade-start: 0px;
   --fade-end: 0px;
@@ -895,6 +908,14 @@ h3 {
   display: flex;
   flex-direction: column;
   gap: 36px;
+}
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.settings-list > .section-heading {
+  margin-bottom: 0;
 }
 .save-preference {
   gap: 10px;
@@ -2127,4 +2148,138 @@ h3 {
     black calc(100% - var(--fade-end, 0px)),
     transparent
   );
+}
+
+.root-depth {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.root-depth [data-slot="select-trigger"] {
+  width: 126px;
+}
+.root-depth input {
+  width: 64px;
+}
+.recognition-request-modal {
+  width: min(560px, calc(100vw - 32px));
+  height: min(400px, calc(100dvh - 48px));
+}
+.recognition-request-modal > .modal-body {
+  flex: 1;
+  min-height: 0;
+}
+.recognition-request-modal textarea {
+  height: 108px;
+  resize: none;
+}
+.recognition-loading {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 16px;
+}
+.recognition-loading svg {
+  width: 28px;
+  height: 28px;
+}
+.modal.recognition-diff-modal[data-slot="dialog-content"] {
+  max-width: 900px;
+  width: min(900px, calc(100vw - 32px));
+  height: min(720px, calc(100dvh - 48px));
+}
+.recognition-diff-toolbar {
+  padding: 16px 24px 0;
+}
+.recognition-diff-toolbar label,
+.recognition-change > label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.recognition-diff-body {
+  flex: 1;
+  min-height: 0;
+}
+.recognition-diff-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.recognition-diff-group h3 {
+  overflow-wrap: anywhere;
+}
+.recognition-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+.recognition-value {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--soft);
+  min-height: 40px;
+}
+.recognition-value mark {
+  color: var(--ink);
+  background: var(--accent-soft);
+  border-radius: 2px;
+}
+.recognition-change {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.recognition-candidate {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  height: auto;
+  width: 100%;
+  padding: 12px;
+  gap: 6px;
+  white-space: normal;
+  text-align: left;
+  margin-bottom: 4px;
+}
+.recognition-candidate > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.recognition-candidate > div > span:first-child {
+  min-width: 0;
+}
+.recognition-candidate p {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-weight: 400;
+  color: var(--secondary);
+}
+.recognition-citations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+.recognition-citations > button {
+  max-width: 100%;
+}
+@media (max-width: 640px) {
+  .recognition-columns {
+    gap: 8px;
+  }
+  .recognition-value {
+    padding: 8px;
+  }
 }

@@ -1,3 +1,4 @@
+import { parseFilename } from "./filename";
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -11,7 +12,7 @@ import type {
   Transfer,
   Work,
 } from "../shared/model";
-import type { ScanResult } from "./scan";
+import { relativeDepth, type ScanResult } from "./scan";
 import { defaultSettings, type SettingsState } from "../shared/settings";
 import type { z } from "zod";
 import type { editSchema } from "../shared/validation";
@@ -154,10 +155,15 @@ export class LibraryStore {
       })
       .filter((w) => w.episodes.length)
       .sort((a, b) => a.order - b.order || b.createdAt - a.createdAt);
+    const settings = this.config("settings")
+      ? JSON.parse(this.config("settings")!)
+      : defaultSettings(this.preferences().language);
+    if (settings.recognition.parser === "guessit")
+      settings.recognition.parser = "release";
+    if (settings.recognition.parser === "anitopy")
+      settings.recognition.parser = "anitomy";
     return {
-      settings: this.config("settings")
-        ? (JSON.parse(this.config("settings")!) as SettingsState)
-        : defaultSettings(this.preferences().language),
+      settings: settings as SettingsState,
       connections: this.connections(),
       works,
       collections: this.all("collection"),
@@ -190,13 +196,14 @@ export class LibraryStore {
           e.workId,
           Math.max(nextOrders.get(e.workId) || 0, e.order + 1),
         );
+      const parser = this.snapshot().settings.recognition.parser;
       for (const group of result.groups) {
         const workId = stableId(connectionId, group.path);
         const old = this.get<StoredWork>("work", workId);
         const work: StoredWork = old || {
           id: workId,
           connectionId,
-          root,
+          root: group.root || root,
           path: group.path,
           title: group.name,
           description: "",
@@ -213,14 +220,20 @@ export class LibraryStore {
           const episodeId = stableId(connectionId, file.path);
           seen.add(episodeId);
           const previous = this.get<StoredEpisode>("episode", episodeId);
+          const parsed = previous
+            ? null
+            : parseFilename(
+                file.name,
+                parser === "anitomy" ? "anitomy" : "release",
+              );
           const episode: StoredEpisode = previous || {
             id: episodeId,
             workId,
             connectionId,
             path: file.path,
             fileName: file.name,
-            number: "",
-            title: "",
+            number: parsed?.number || "",
+            title: parsed?.episodeTitle || "",
             description: "",
             size: file.size,
             modified: file.modified,
@@ -273,20 +286,37 @@ export class LibraryStore {
         for (const episode of this.all<StoredEpisode>("episode")) {
           if (episode.connectionId !== connectionId || seen.has(episode.id))
             continue;
-          const parent = path.dirname(episode.path);
-          if (result.completeDirectories.includes(parent))
-            this.put("episode", episode.id, { ...episode, missing: true });
-          // A missing direct folder is distinguishable from an unreadable one.
-          const work = this.get<StoredWork>("work", episode.workId);
+          const paths =
+            this.connection(connectionId).type === "local" ? path : path.posix;
+          const parent = paths.dirname(episode.path);
           if (
-            work?.root === root &&
-            work.path !== root &&
-            path.dirname(work.path) === root &&
-            !result.completeDirectories.includes(work.path) &&
-            !result.failures.includes(work.path) &&
-            !result.groups.some((g) => g.path === work.path) &&
-            !episode.manual
+            result.scopes &&
+            !result.scopes.some((scope) => {
+              const depth = relativeDepth(scope.root, parent);
+              return depth !== null && depth <= scope.depth;
+            })
           )
+            continue;
+          let absent = result.completeDirectories.includes(parent);
+          // A successful parent listing may prove a descendant's ancestor disappeared.
+          if (result.children) {
+            let child = parent;
+            for (
+              let ancestor = paths.dirname(child);
+              ancestor !== child;
+              ancestor = paths.dirname(child)
+            ) {
+              if (
+                result.children[ancestor] &&
+                !result.children[ancestor].includes(child)
+              ) {
+                absent = true;
+                break;
+              }
+              child = ancestor;
+            }
+          }
+          if (absent)
             this.put("episode", episode.id, { ...episode, missing: true });
         }
       }

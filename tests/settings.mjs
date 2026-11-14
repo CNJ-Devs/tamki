@@ -47,7 +47,7 @@ export async function checkSettings(app, shell, base, profile) {
     .getByRole("combobox", { name: "Filename parser", exact: true })
     .click();
   await shell
-    .getByRole("option", { name: "Anime · Anitopy", exact: true })
+    .getByRole("option", { name: "Anime · Anitomy", exact: true })
     .click();
   await shell
     .getByRole("button", { name: "AI recognition prompt", exact: true })

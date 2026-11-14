@@ -11,6 +11,8 @@ export interface Connection {
   type: "local" | "zspace";
   name: string;
   roots: string[];
+  /** Relative directory depth per selected root. Absent legacy values mean one level. */
+  scanDepths?: Record<string, number>;
   /** Authorized browsing scope; roots above are only the selected scan folders. */
   browseRoots?: string[];
   status: "connected" | "offline" | "scanning";

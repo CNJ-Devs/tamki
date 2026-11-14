@@ -19,6 +19,7 @@ export const connectionSchema = z
     type: z.enum(["local", "zspace"]),
     name: z.string().trim().min(1).max(100),
     roots: z.array(location).min(1).max(64),
+    scanDepths: z.record(location, z.number().int().min(0).max(32)).optional(),
     draftId: id.optional(),
   })
   .strict();

@@ -72,7 +72,7 @@ test("bounded scanner ignores empty media, nested folders, symlinks and non-vide
       path.join(media, "escape.webm"),
     );
     const provider = new LocalProvider([await realpath(media)]);
-    const result = await scanRoot(provider, media);
+    const result = await scanRoot(provider, await realpath(media));
     assert.deepEqual(
       result.groups.map((g) => g.name),
       ["Show", "standalone"],

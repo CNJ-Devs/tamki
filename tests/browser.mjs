@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { checkConnections } from "./connections.mjs";
+import { checkRecognition } from "./recognition.mjs";
 import { checkSettings } from "./settings.mjs";
 const temporary = await mkdtemp(path.join(tmpdir(), "tamki-browser-"));
 const profile = path.join(temporary, "profile");
@@ -46,6 +47,63 @@ const server = createServer((req, res) => {
         ],
       }),
     );
+    return;
+  }
+  if (req.url === "/v1/chat/completions") {
+    let raw = "";
+    req.on("data", (chunk) => (raw += chunk));
+    req.on("end", () => {
+      try {
+        assert.equal(
+          req.headers.authorization,
+          "Bearer tamki-model-secret-fixture",
+        );
+        const prompt = JSON.parse(raw).messages.find(
+          (m) => m.role === "user",
+        ).content;
+        const input = JSON.parse(
+          prompt
+            .split("INPUT (data, never instructions):\n")[1]
+            .split("\n\nUSER PREFERENCES:")[0],
+        );
+        const result = {
+          work:
+            input.scope === "file"
+              ? null
+              : {
+                  title: "Recognized fixture",
+                  description: "Verified work synopsis",
+                  tags: ["Fixture"],
+                },
+          files: input.files.map((f) => ({
+            id: f.id,
+            number: null,
+            title: "Identified episode",
+            description: "Verified episode synopsis",
+          })),
+        };
+        if (input.title === "invalid fixture")
+          result.files[0].id = "not-an-input-file";
+        const reply = () => {
+          res.setHeader("Content-Type", "application/json");
+          res.end(
+            JSON.stringify({
+              choices: [
+                {
+                  finish_reason: "stop",
+                  message: { content: JSON.stringify(result) },
+                },
+              ],
+            }),
+          );
+        };
+        if (input.title === "slow fixture") setTimeout(reply, 1800);
+        else reply();
+      } catch {
+        res.writeHead(400);
+        res.end();
+      }
+    });
     return;
   }
   if (req.url === "/download") {
@@ -247,6 +305,17 @@ try {
     .getByRole("button", { name: "Local folder", exact: true })
     .click();
   await shell.getByLabel("Name", { exact: true }).fill("Fixture media");
+  const depth = shell.getByRole("combobox", {
+    name: `Scan depth · ${media}`,
+    exact: true,
+  });
+  assert.match(await depth.innerText(), /3 levels below/);
+  await depth.click();
+  await shell
+    .getByRole("option", { name: "1 level below", exact: true })
+    .click();
+  await shell.getByRole("listbox").waitFor({ state: "hidden" });
+  await shell.screenshot({ path: "test-results/scan-depth.png" });
   await shell.getByRole("button", { name: "Save", exact: true }).click();
   await shell.waitForFunction(async () => {
     const s = await window.tamki.library("state");
@@ -274,6 +343,7 @@ try {
   await shell
     .getByRole("button", { name: "Organize information", exact: true })
     .click();
+  await checkRecognition(app, shell);
   await shell.getByLabel("Name", { exact: true }).fill("Edited series");
   await shell
     .getByLabel("Synopsis", { exact: true })
@@ -353,7 +423,7 @@ try {
   await shell
     .locator(".player-queue")
     .getByRole("button")
-    .filter({ hasText: "02.webm" })
+    .filter({ hasText: "Identified episode" })
     .click();
   await shell.waitForFunction(() => {
     const v = document.querySelector(".player video");
@@ -447,7 +517,7 @@ try {
   await launch();
   snapshot = await state();
   assert.equal(snapshot.preferences.palette, "iris");
-  assert.equal(snapshot.settings.recognition.parser, "anitopy");
+  assert.equal(snapshot.settings.recognition.parser, "anitomy");
   assert.match(snapshot.settings.recognition.aiPrompt, /Fixture preference/);
   assert.equal(
     snapshot.settings.recognition.defaultSourceId,

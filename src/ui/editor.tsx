@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  MagnifyingGlassIcon,
   PencilSimpleIcon,
   TrashIcon,
   DotsSixVerticalIcon,
@@ -53,6 +54,8 @@ import {
 } from "./components/ui/command";
 import { useI18n, errorMessage } from "./i18n";
 import { toast } from "sonner";
+import { RecognitionFlow } from "./recognition-flow";
+import type { RecognitionRequest } from "../shared/recognition";
 import { FilePicker } from "./connections";
 const editable = (work: Work) => ({
   title: work.title,
@@ -124,7 +127,7 @@ export function MetadataEditor({
 }) {
   const t = useI18n();
   const [draft, setDraft] = useState(() => structuredClone(work)),
-    [baseline] = useState(() => editable(work)),
+    [baseline, setBaseline] = useState(() => editable(work)),
     [tab, setTab] = useState("work"),
     [episodeId, setEpisodeId] = useState<string | null>(null),
     [discard, setDiscard] = useState(false),
@@ -132,6 +135,7 @@ export function MetadataEditor({
     [saving, setSaving] = useState(false),
     [tag, setTag] = useState(""),
     [tagsOpen, setTagsOpen] = useState(false);
+  const [recognizing, setRecognizing] = useState(false);
   const [adding, setAdding] = useState(false);
   const episode = draft.episodes.find((e) => e.id === episodeId);
   const dirty = JSON.stringify(editable(draft)) !== JSON.stringify(baseline);
@@ -160,27 +164,37 @@ export function MetadataEditor({
       !draft.tags.includes(s) &&
       s.toLocaleLowerCase().includes(tag.toLocaleLowerCase()),
   );
+  const editInput = (value: Work): RecognitionRequest["draft"] => ({
+    id: value.id,
+    title: value.title,
+    description: value.description,
+    tags: value.tags,
+    removedEpisodeIds: baseline.episodes
+      .filter((e) => !value.episodes.some((current) => current.id === e.id))
+      .map((e) => e.id),
+    attachments: value.episodes
+      .filter((e) => !baseline.episodes.some((old) => old.id === e.id))
+      .map((e) => ({ connectionId: e.connectionId, path: e.path })),
+    episodes: value.episodes.map(({ id, number, title, description }) => ({
+      id,
+      number,
+      title,
+      description,
+    })),
+  });
+  const persist = async (value: Work) => {
+    const updated = await window.tamki.library<LibraryState>(
+      "edit",
+      editInput(value),
+    );
+    const saved = updated.works.find((w) => w.id === value.id) || value;
+    setDraft(saved);
+    setBaseline(editable(saved));
+  };
   const save = async () => {
     setSaving(true);
     try {
-      await window.tamki.library("edit", {
-        id: draft.id,
-        title: draft.title,
-        description: draft.description,
-        tags: draft.tags,
-        removedEpisodeIds: baseline.episodes
-          .filter((e) => !draft.episodes.some((current) => current.id === e.id))
-          .map((e) => e.id),
-        attachments: draft.episodes
-          .filter((e) => !baseline.episodes.some((old) => old.id === e.id))
-          .map((e) => ({ connectionId: e.connectionId, path: e.path })),
-        episodes: draft.episodes.map(({ id, number, title, description }) => ({
-          id,
-          number,
-          title,
-          description,
-        })),
-      });
+      await persist(draft);
       onBack();
     } catch (e) {
       toast.error(errorMessage(e, t));
@@ -206,6 +220,14 @@ export function MetadataEditor({
           )
         }
       >
+        <Button
+          variant="secondary"
+          disabled={saving || !draft.episodes.length || !draft.title.trim()}
+          onClick={() => setRecognizing(true)}
+        >
+          <MagnifyingGlassIcon data-icon="inline-start" />
+          {t(episode ? "recognizeEpisode" : "recognizeWork")}
+        </Button>
         {!episode && tab === "episodes" && (
           <Button
             variant="secondary"
@@ -370,6 +392,19 @@ export function MetadataEditor({
           )}
         </div>
       </Fade>
+      {recognizing && (
+        <RecognitionFlow
+          work={draft}
+          config={state.settings.recognition}
+          episodeId={episode?.id}
+          draftInput={editInput(draft)}
+          onApply={async (value) => {
+            await persist(value);
+            onBack();
+          }}
+          onClose={() => setRecognizing(false)}
+        />
+      )}
       {adding && (
         <FilePicker
           connections={state.connections}

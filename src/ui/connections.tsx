@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  InfoIcon,
   FolderIcon,
   HardDrivesIcon,
   PlusIcon,
@@ -56,6 +57,15 @@ export function ConnectionWizard({
   }>();
   const [name, setName] = useState(initial?.name || "");
   const [roots, setRoots] = useState<string[]>(initial?.roots || []);
+  const [depths, setDepths] = useState<Record<string, number>>(() =>
+    Object.fromEntries(
+      (initial?.roots || []).map((root) => [
+        root,
+        initial?.scanDepths?.[root] ?? 1,
+      ]),
+    ),
+  );
+  const [customDepths, setCustomDepths] = useState<string[]>([]);
   const [directory, setDirectory] = useState("");
   const [entries, setEntries] = useState<Entry[]>([]);
   const [code, setCode] = useState("");
@@ -201,6 +211,9 @@ export function ConnectionWizard({
         type,
         name,
         roots,
+        scanDepths: Object.fromEntries(
+          roots.map((root) => [root, depths[root] ?? 3]),
+        ),
         draftId: draft?.id,
       });
       ownedDraft.current = undefined;
@@ -423,15 +436,73 @@ export function ConnectionWizard({
                 )}
               </div>
             </FormField>
-            <div className="selected-roots">
-              {roots.map((root) => (
-                <div key={root}>
-                  <TextTip>{root}</TextTip>
-                  <IconButton label={t("remove")} onClick={() => toggle(root)}>
-                    <TrashIcon />
-                  </IconButton>
-                </div>
-              ))}
+            <div className="settings-list">
+              <div className="section-heading">
+                <h3>{t("scanDepth")}</h3>
+                <IconButton label={t("scanDepthHelp")}>
+                  <InfoIcon />
+                </IconButton>
+              </div>
+              <div className="selected-roots">
+                {roots.map((root) => (
+                  <div key={root}>
+                    <TextTip>{root}</TextTip>
+                    <div className="root-depth">
+                      <Choice
+                        label={`${t("scanDepth")} · ${root}`}
+                        value={
+                          customDepths.includes(root) ||
+                          ![0, 1, 2, 3, 4, 5].includes(depths[root] ?? 3)
+                            ? "custom"
+                            : String(depths[root] ?? 3)
+                        }
+                        onChange={(v) => {
+                          setCustomDepths((old) =>
+                            v === "custom"
+                              ? [...old, root]
+                              : old.filter((p) => p !== root),
+                          );
+                          if (v !== "custom")
+                            setDepths((old) => ({ ...old, [root]: Number(v) }));
+                        }}
+                        options={[
+                          ...[0, 1, 2, 3, 4, 5].map((n) => ({
+                            value: String(n),
+                            label:
+                              n === 0
+                                ? t("scanCurrent")
+                                : n === 1
+                                  ? t("scanOneLevel")
+                                  : t("scanLevels").replace("{n}", String(n)),
+                          })),
+                          { value: "custom", label: t("scanCustom") },
+                        ]}
+                      />
+                      {(customDepths.includes(root) ||
+                        ![0, 1, 2, 3, 4, 5].includes(depths[root] ?? 3)) && (
+                        <Input
+                          type="number"
+                          min={0}
+                          max={32}
+                          aria-label={t("scanDepth")}
+                          value={depths[root] ?? 3}
+                          onChange={(e) => {
+                            const n = Number(e.target.value);
+                            if (Number.isInteger(n) && n >= 0 && n <= 32)
+                              setDepths((old) => ({ ...old, [root]: n }));
+                          }}
+                        />
+                      )}
+                    </div>
+                    <IconButton
+                      label={t("remove")}
+                      onClick={() => toggle(root)}
+                    >
+                      <TrashIcon />
+                    </IconButton>
+                  </div>
+                ))}
+              </div>
             </div>
           </FieldGroup>
         )}
@@ -445,48 +516,56 @@ export function Connections({ connections }: { connections: Connection[] }) {
     [remove, setRemove] = useState<Connection | null>(null);
   return (
     <>
-      <div className="section-heading">
-        <h2>{t("storageConnections")}</h2>
-        <Button variant="secondary" onClick={() => setEdit("new")}>
-          <PlusIcon data-icon="inline-start" />
-          {t("addConnection")}
-        </Button>
-      </div>
-      <div className="connection-list">
-        {connections.map((c) => (
-          <div className="connection-row" key={c.id}>
-            <div className="connection-icon">
-              {c.type === "local" ? <FolderIcon /> : <HardDrivesIcon />}
+      <div className="settings-list">
+        <div className="section-heading">
+          <h2>{t("storageConnections")}</h2>
+          <Button variant="secondary" onClick={() => setEdit("new")}>
+            <PlusIcon data-icon="inline-start" />
+            {t("addConnection")}
+          </Button>
+        </div>
+        <div className="connection-list">
+          {!connections.length && (
+            <Blank title={t("noConnections")} size="section" />
+          )}
+          {connections.map((c) => (
+            <div className="connection-row" key={c.id}>
+              <div className="connection-icon">
+                {c.type === "local" ? <FolderIcon /> : <HardDrivesIcon />}
+              </div>
+              <div className="connection-copy">
+                <TextTip>{c.name}</TextTip>
+                <span className="muted">
+                  {t(c.type)} · {t(c.status)}
+                </span>
+                {c.error && (
+                  <span className="error-text">{errorMessage(c.error, t)}</span>
+                )}
+              </div>
+              <IconButton
+                label={t("testConnection")}
+                disabled={c.status === "scanning"}
+                onClick={() =>
+                  void window.tamki
+                    .library("test-connection", c.id)
+                    .then(() => toast.success(t("connectionOK")))
+                    .catch((e) => toast.error(errorMessage(e, t)))
+                }
+              >
+                <ArrowClockwiseIcon />
+              </IconButton>
+              <IconButton
+                label={t("editConnection")}
+                onClick={() => setEdit(c)}
+              >
+                <PencilSimpleIcon />
+              </IconButton>
+              <IconButton label={t("remove")} onClick={() => setRemove(c)}>
+                <TrashIcon />
+              </IconButton>
             </div>
-            <div className="connection-copy">
-              <TextTip>{c.name}</TextTip>
-              <span className="muted">
-                {t(c.type)} · {t(c.status)}
-              </span>
-              {c.error && (
-                <span className="error-text">{errorMessage(c.error, t)}</span>
-              )}
-            </div>
-            <IconButton
-              label={t("testConnection")}
-              disabled={c.status === "scanning"}
-              onClick={() =>
-                void window.tamki
-                  .library("test-connection", c.id)
-                  .then(() => toast.success(t("connectionOK")))
-                  .catch((e) => toast.error(errorMessage(e, t)))
-              }
-            >
-              <ArrowClockwiseIcon />
-            </IconButton>
-            <IconButton label={t("editConnection")} onClick={() => setEdit(c)}>
-              <PencilSimpleIcon />
-            </IconButton>
-            <IconButton label={t("remove")} onClick={() => setRemove(c)}>
-              <TrashIcon />
-            </IconButton>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
       {edit && (
         <ConnectionWizard
@@ -559,7 +638,9 @@ export function FilePicker({
     ? entries.filter(
         (e) =>
           e.directory ||
-          (/\.(mp4|m4v|webm|mkv|mov|avi|ts|m2ts|mpg|mpeg)$/i.test(e.name) &&
+          (/\.(mp4|m4v|webm|mkv|mov|avi|ts|m2ts|mpg|mpeg|rmvb|rm|wmv|flv)$/i.test(
+            e.name,
+          ) &&
             e.size > 0),
       )
     : connection?.roots.map((p) => ({

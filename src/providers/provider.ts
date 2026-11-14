@@ -14,6 +14,10 @@ export const videoExtensions = new Set([
   ".m2ts",
   ".mpg",
   ".mpeg",
+  ".rmvb",
+  ".rm",
+  ".wmv",
+  ".flv",
 ]);
 export function isVideo(entry: Entry): boolean {
   return (
