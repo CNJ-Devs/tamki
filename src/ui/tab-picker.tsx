@@ -1,3 +1,6 @@
+import { Input } from "./components/ui/input";
+import { PencilSimpleIcon, TrashIcon, StarIcon } from "@phosphor-icons/react";
+import type { BrowserBookmark } from "../shared/model";
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { GlobeIcon, HouseIcon, PlayCircleIcon } from "@phosphor-icons/react";
@@ -14,7 +17,7 @@ import { LocaleContext, useI18n } from "./i18n";
 import { applyTheme } from "./theme";
 import { VideoTask, DownloadRate } from "./tasks";
 import { TooltipProvider } from "./components/ui/tooltip";
-import { IconButton } from "./common";
+import { Button, IconButton } from "./common";
 import { PauseIcon, PlayIcon } from "@phosphor-icons/react";
 import { toast, Toaster } from "sonner";
 import { errorMessage } from "./i18n";
@@ -51,6 +54,35 @@ function QuickPanel({ state }: { state: TabPickerState }) {
   const [query, setQuery] = useState("");
   useEffect(() => setQuery(""), [state.mode, state.browser.pickerOpen]);
   if (!state.mode || state.mode === "tabs") return <TabSearch state={state} />;
+  if (state.mode === "address")
+    return (
+      <div
+        className="native-tab-picker address-suggestions"
+        role="listbox"
+        aria-label={t("addressSuggestions")}
+      >
+        {state.suggestions?.length ? (
+          state.suggestions.map((item, index) => (
+            <button
+              role="option"
+              aria-selected={state.suggestionIndex === index}
+              key={item.url}
+              onClick={() =>
+                void window.tamkiTabs.action("open-suggestion", item.url)
+              }
+            >
+              <span className="tab-picker-copy">
+                <b>{item.title || item.url}</b>
+                <small>{item.url}</small>
+              </span>
+            </button>
+          ))
+        ) : (
+          <p>{t("noResults")}</p>
+        )}
+      </div>
+    );
+  if (state.mode === "bookmarks") return <Bookmarks state={state} />;
   return (
     <div
       className="native-tab-picker quick-panel"
@@ -165,6 +197,115 @@ function QuickPanel({ state }: { state: TabPickerState }) {
           >
             {t("allTasks")}
           </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function Bookmarks({ state }: { state: TabPickerState }) {
+  const t = useI18n();
+  const [query, setQuery] = useState("");
+  const [edit, setEdit] = useState<BrowserBookmark | null>(null);
+  const perform = async (type: string, value: unknown) => {
+    try {
+      await window.tamkiTabs.action(type, value);
+      return true;
+    } catch {
+      toast.error(t("bookmarkInvalid"));
+      return false;
+    }
+  };
+  const items = (state.browser.bookmarks || []).filter((b) =>
+    `${b.title} ${b.url}`
+      .toLocaleLowerCase()
+      .includes(query.toLocaleLowerCase()),
+  );
+  return (
+    <div
+      className="native-tab-picker bookmark-panel"
+      role="dialog"
+      aria-label={t("bookmarks")}
+    >
+      <strong>{t("bookmarks")}</strong>
+      {edit ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void perform("bookmark-edit", edit).then((ok) => {
+              if (ok) setEdit(null);
+            });
+          }}
+        >
+          <label>
+            {t("bookmarkTitle")}
+            <Input
+              value={edit.title}
+              maxLength={500}
+              required
+              onChange={(e) => setEdit({ ...edit, title: e.target.value })}
+            />
+          </label>
+          <label>
+            {t("bookmarkURL")}
+            <Input
+              value={edit.url}
+              maxLength={8192}
+              required
+              onChange={(e) => setEdit({ ...edit, url: e.target.value })}
+            />
+          </label>
+          <div className="bookmark-edit-actions">
+            <Button variant="secondary" onClick={() => setEdit(null)}>
+              {t("browserCancel")}
+            </Button>
+            <Button type="submit">{t("saveBookmark")}</Button>
+          </div>
+        </form>
+      ) : (
+        <>
+          <Input
+            autoFocus
+            aria-label={t("search")}
+            placeholder={t("search")}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <div className="bookmark-list">
+            {items.map((b) => (
+              <div className="bookmark-row" key={b.id}>
+                <button
+                  className="bookmark-open"
+                  onClick={() => void perform("bookmark-open", b.id)}
+                >
+                  <StarIcon />
+                  <span className="tab-picker-copy">
+                    <b>{b.title}</b>
+                    <small>{b.url}</small>
+                  </span>
+                </button>
+                <IconButton
+                  label={t("editBookmark")}
+                  onClick={() => setEdit(b)}
+                >
+                  <PencilSimpleIcon />
+                </IconButton>
+                <IconButton
+                  label={t("removeBookmark")}
+                  onClick={() => void perform("bookmark-remove", b.id)}
+                >
+                  <TrashIcon />
+                </IconButton>
+              </div>
+            ))}
+            {!items.length && (
+              <p>
+                {t(
+                  state.browser.bookmarks?.length ? "noResults" : "noBookmarks",
+                )}
+              </p>
+            )}
+          </div>
         </>
       )}
     </div>

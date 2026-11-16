@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 
-// This trusted surface can inspect tabs/history/tasks and open their main views.
+// This trusted surface can inspect tabs/history/tasks, manage bookmarks and select address suggestions.
 // Its main-process handler validates each action; no generic library IPC is exposed.
 contextBridge.exposeInMainWorld("tamkiTabs", {
   action: (type: string, value?: unknown) =>

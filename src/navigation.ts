@@ -5,7 +5,20 @@ export function isWebURL(value: string): boolean {
     return false;
   }
 }
-export function resolveAddress(input: string): string {
+export const searchEngines = {
+  google: "https://www.google.com/search?q=",
+  bing: "https://www.bing.com/search?q=",
+  baidu: "https://www.baidu.com/s?wd=",
+  duckduckgo: "https://duckduckgo.com/?q=",
+};
+export type SearchEngine = keyof typeof searchEngines;
+export function searchURL(query: string, engine: SearchEngine = "google") {
+  return searchEngines[engine] + encodeURIComponent(query);
+}
+export function resolveAddress(
+  input: string,
+  engine: SearchEngine = "google",
+): string {
   const value = input.trim();
   if (!value) return "about:blank";
   if (isWebURL(value)) return new URL(value).href;
@@ -15,5 +28,5 @@ export function resolveAddress(input: string): string {
     return new URL(
       `${value.startsWith("localhost") ? "http" : "https"}://${value}`,
     ).href;
-  return `https://www.google.com/search?q=${encodeURIComponent(value)}`;
+  return searchURL(value, engine);
 }

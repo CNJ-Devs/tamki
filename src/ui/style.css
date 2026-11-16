@@ -3125,3 +3125,101 @@ html.capture-surface,
   flex-shrink: 0;
   color: var(--secondary);
 }
+
+.browser-find {
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 4px 8px;
+}
+.browser-find > [data-slot="input-group"] {
+  width: min(420px, calc(100% - 108px));
+  height: 30px;
+}
+.browser-find [aria-live] {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.browser-favicon {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  flex: 0 0 16px;
+}
+.tab-sound {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 6px;
+}
+.tab-sound:hover {
+  background: var(--hover);
+}
+.tab-sound svg {
+  width: 14px;
+  height: 14px;
+}
+.address-suggestions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+}
+.address-suggestions > button {
+  text-align: left;
+  padding: 8px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+.address-suggestions > button:hover,
+.address-suggestions > button[aria-selected="true"] {
+  background: var(--hover);
+}
+.bookmark-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.bookmark-list {
+  overflow: auto;
+  min-height: 0;
+}
+.bookmark-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-block: 4px;
+}
+.bookmark-open {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+.bookmark-open > svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.bookmark-panel form,
+.bookmark-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.bookmark-panel form {
+  gap: 12px;
+}
+.bookmark-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

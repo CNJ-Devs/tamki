@@ -148,6 +148,11 @@ export interface OnlineWork extends Work {
 export interface BrowserTab {
   onlineWork?: OnlineWork;
   id: number;
+  favicon?: string;
+  audible?: boolean;
+  muted?: boolean;
+  zoom?: number;
+  find?: { open: boolean; text: string; active: number; matches: number };
   kind: "web" | "player";
   workId?: string;
   title: string;
@@ -157,11 +162,18 @@ export interface BrowserTab {
   forward: boolean;
   error: string;
 }
+export interface BrowserBookmark {
+  id: string;
+  url: string;
+  title: string;
+}
 export interface BrowserState {
+  bookmarks?: BrowserBookmark[];
+  searchEngine?: import("../navigation").SearchEngine;
   active: number;
   tabs: BrowserTab[];
   pickerOpen: boolean;
-  pickerMode?: "tabs" | "history" | "tasks";
+  pickerMode?: "tabs" | "history" | "tasks" | "bookmarks" | "address";
 }
 export interface BrowserVisit {
   url: string;
@@ -169,8 +181,10 @@ export interface BrowserVisit {
   time: number;
 }
 export interface TabPickerState {
-  mode?: "tabs" | "history" | "tasks";
+  mode?: "tabs" | "history" | "tasks" | "bookmarks" | "address";
   history?: BrowserVisit[];
+  suggestions?: BrowserVisit[];
+  suggestionIndex?: number;
   jobs?: import("./capture").VideoDownloadJob[];
   transfers?: Transfer[];
   browser: BrowserState;
@@ -186,6 +200,7 @@ export interface TamkiBridge {
     callback: (jobs: import("./capture").VideoDownloadJob[]) => void,
   ): () => void;
   onFocusAddress(callback: () => void): () => void;
+  onFocusFind(callback: () => void): () => void;
   onFocusTabs(callback: () => void): () => void;
   onPlayDownload(
     callback: (value: { workId: string; episodeId: string }) => void,

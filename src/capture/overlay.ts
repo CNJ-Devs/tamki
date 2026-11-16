@@ -54,6 +54,7 @@ export class CaptureOverlay {
       downloads: VideoDownloads;
       library: LibraryService;
       settings(): void;
+      onLayout?(): void;
       pageContext?(tabId: number, pageURL: string): Promise<unknown>;
       play(
         result: CaptureResult,
@@ -538,6 +539,7 @@ export class CaptureOverlay {
     else if (!this.visible) this.panel.setVisible(false);
     this.options.window.contentView.addChildView(this.reel);
     this.options.window.contentView.addChildView(this.panel);
+    this.options.onLayout?.();
   }
   close() {
     this.closed = true;

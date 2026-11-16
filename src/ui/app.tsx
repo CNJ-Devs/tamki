@@ -3,6 +3,12 @@ import { createRoot } from "react-dom/client";
 import { Tasks } from "./tasks";
 import { Toaster, toast } from "sonner";
 import {
+  StarIcon,
+  SlidersHorizontalIcon,
+  SpeakerHighIcon,
+  SpeakerSlashIcon,
+  DotsThreeIcon,
+  CaretUpIcon,
   HouseIcon,
   ClockCounterClockwiseIcon,
   DownloadSimpleIcon,
@@ -18,7 +24,7 @@ import {
   PauseIcon,
   PlayIcon,
 } from "@phosphor-icons/react";
-import type { BrowserState, LibraryState } from "../shared/model";
+import type { BrowserState, BrowserTab, LibraryState } from "../shared/model";
 import { Button, IconButton, PageHeader, Fade, TextTip, Blank } from "./common";
 import { TooltipProvider } from "./components/ui/tooltip";
 import {
@@ -34,6 +40,78 @@ import { useLibraryDurations } from "./media";
 import { LocaleContext, useI18n, errorMessage } from "./i18n";
 import { applyTheme } from "./theme";
 import { cn } from "./lib/utils";
+function BrowserFind({
+  tab,
+  act,
+}: {
+  tab: BrowserTab;
+  act: (type: string, value?: unknown) => Promise<unknown>;
+}) {
+  const t = useI18n(),
+    input = useRef<HTMLInputElement>(null);
+  const [text, setText] = useState(tab.find?.text || "");
+  useEffect(
+    () =>
+      window.tamki.onFocusFind(() => {
+        input.current?.focus();
+        input.current?.select();
+      }),
+    [],
+  );
+  return (
+    <div className="browser-find" role="search" aria-label={t("findPage")}>
+      <InputGroup>
+        <InputGroupInput
+          ref={input}
+          autoFocus
+          aria-label={t("findPage")}
+          placeholder={t("findPage")}
+          value={text}
+          maxLength={1000}
+          onChange={(e) => {
+            setText(e.target.value);
+            void act("find", { text: e.target.value });
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              void act("find-close");
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              void act("find", { text, next: true, forward: !e.shiftKey });
+            }
+          }}
+        />
+        <InputGroupAddon align="inline-end">
+          <span aria-live="polite">
+            {text
+              ? tab.find?.matches
+                ? `${tab.find.active}/${tab.find.matches}`
+                : t("noMatches")
+              : ""}
+          </span>
+        </InputGroupAddon>
+      </InputGroup>
+      <IconButton
+        label={t("findPrevious")}
+        disabled={!tab.find?.matches}
+        onClick={() => void act("find", { text, next: true, forward: false })}
+      >
+        <CaretUpIcon />
+      </IconButton>
+      <IconButton
+        label={t("findNext")}
+        disabled={!tab.find?.matches}
+        onClick={() => void act("find", { text, next: true, forward: true })}
+      >
+        <CaretDownIcon />
+      </IconButton>
+      <IconButton label={t("closeFind")} onClick={() => void act("find-close")}>
+        <XIcon />
+      </IconButton>
+    </div>
+  );
+}
 function App() {
   const [state, setState] = useState<LibraryState>();
   useLibraryDurations(state);
@@ -88,6 +166,7 @@ function Shell({ state }: { state: LibraryState }) {
     >({}),
     [address, setAddress] = useState(""),
     [error, setError] = useState("");
+  const draggedTab = useRef<number | null>(null);
   const addressRef = useRef<HTMLInputElement>(null),
     strip = useRef<HTMLDivElement>(null),
     pickerTrigger = useRef<HTMLButtonElement>(null);
@@ -136,8 +215,30 @@ function Shell({ state }: { state: LibraryState }) {
       focusTabs();
     };
   }, []);
+  const suggest = (query: string) => {
+    const bounds = addressRef.current
+      ?.closest('[data-slot="input-group"]')
+      ?.getBoundingClientRect();
+    if (bounds)
+      void act("address-suggest", {
+        query,
+        x: bounds.left,
+        y: bounds.bottom + 4,
+        width: bounds.width,
+      });
+  };
   const current = browser.tabs.find((tab) => tab.id === browser.active),
     work = state.works.find((w) => w.id === workId);
+  useEffect(() => {
+    if (!browser.pickerOpen || browser.pickerMode !== "address") return;
+    const group = addressRef.current?.closest('[data-slot="input-group"]');
+    if (!group) return;
+    const observer = new ResizeObserver(() =>
+      suggest(addressRef.current?.value || ""),
+    );
+    observer.observe(group);
+    return () => observer.disconnect();
+  }, [browser.pickerOpen, browser.pickerMode, current?.id]);
   useEffect(() => {
     if (document.activeElement !== addressRef.current)
       setAddress(current?.url === "about:blank" ? "" : current?.url || "");
@@ -150,7 +251,7 @@ function Shell({ state }: { state: LibraryState }) {
         32,
         Math.min(
           202,
-          (el.clientWidth - (window.tamki.platform === "darwin" ? 284 : 164)) /
+          (el.clientWidth - (window.tamki.platform === "darwin" ? 320 : 200)) /
             Math.max(1, browser.tabs.length),
         ),
       );
@@ -176,7 +277,7 @@ function Shell({ state }: { state: LibraryState }) {
   };
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
-    void act("navigate", address);
+    void act("address-accept", address);
     addressRef.current?.blur();
   };
   return (
@@ -186,7 +287,9 @@ function Shell({ state }: { state: LibraryState }) {
       onPointerDown={(event) => {
         if (
           browser.pickerOpen &&
-          !(event.target as Element).closest(".browser-actions")
+          !(event.target as Element).closest(
+            ".browser-actions, .browser-address",
+          )
         )
           void act("tabs-dismiss");
       }}
@@ -213,6 +316,49 @@ function Shell({ state }: { state: LibraryState }) {
             <div
               key={tab.id}
               className={cn("web-tab", tab.id === browser.active && "selected")}
+              draggable
+              onDragStart={(e) => {
+                draggedTab.current = tab.id;
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData(
+                  "application/x-tamki-tab",
+                  String(tab.id),
+                );
+              }}
+              onDragEnd={() => {
+                draggedTab.current = null;
+              }}
+              onDragOver={(e) => {
+                if (draggedTab.current !== null) {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                }
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                const id = draggedTab.current;
+                draggedTab.current = null;
+                if (id === null) return;
+                const bounds = e.currentTarget.getBoundingClientRect();
+                void act("tab-reorder", {
+                  id,
+                  before: tab.id,
+                  after: e.clientX > bounds.left + bounds.width / 2,
+                });
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                void act("tab-menu", tab.id);
+              }}
+              onAuxClick={(e) => {
+                if (e.button === 1) {
+                  e.preventDefault();
+                  void act("close", tab.id);
+                }
+              }}
+              onMouseDown={(e) => {
+                if (e.button === 1) e.preventDefault();
+              }}
             >
               <span className="tab-rule left" />
               <button
@@ -223,11 +369,27 @@ function Shell({ state }: { state: LibraryState }) {
               >
                 {tab.kind === "player" ? (
                   <PlayCircleIcon />
+                ) : tab.favicon && !tab.loading ? (
+                  <img
+                    className="browser-favicon"
+                    src={tab.favicon}
+                    alt=""
+                    draggable={false}
+                  />
                 ) : (
                   <GlobeIcon className={tab.loading ? "spin" : undefined} />
                 )}
                 <TextTip>{tab.title || t("newTab")}</TextTip>
               </button>
+              {tab.kind === "web" && (tab.audible || tab.muted) && (
+                <button
+                  className="tab-sound"
+                  aria-label={t(tab.muted ? "unmuteTab" : "muteTab")}
+                  onClick={() => void act("tab-mute", tab.id)}
+                >
+                  {tab.muted ? <SpeakerSlashIcon /> : <SpeakerHighIcon />}
+                </button>
+              )}
               <button
                 className="close-tab"
                 aria-label={`${t("close")} ${tab.title || t("newTab")}`}
@@ -259,6 +421,16 @@ function Shell({ state }: { state: LibraryState }) {
           >
             <CaretDownIcon />
           </Button>{" "}
+          <IconButton
+            label={t("bookmarks")}
+            aria-haspopup="dialog"
+            aria-expanded={
+              browser.pickerOpen && browser.pickerMode === "bookmarks"
+            }
+            onClick={() => void act("bookmarks-open")}
+          >
+            <StarIcon />
+          </IconButton>
           <IconButton
             label={t("browserHistory")}
             aria-haspopup="dialog"
@@ -342,9 +514,15 @@ function Shell({ state }: { state: LibraryState }) {
               >
                 {current.loading ? <XIcon /> : <ArrowClockwiseIcon />}
               </IconButton>
-              <InputGroup data-invalid={!!error}>
+              <InputGroup data-invalid={!!error} className="browser-address">
                 <InputGroupAddon>
-                  <MagnifyingGlassIcon />
+                  <IconButton
+                    label={t("sitePermissions")}
+                    disabled={!/^https?:/.test(current.url)}
+                    onClick={() => void act("site-menu")}
+                  >
+                    <SlidersHorizontalIcon />
+                  </IconButton>
                 </InputGroupAddon>
                 <InputGroupInput
                   ref={addressRef}
@@ -352,12 +530,59 @@ function Shell({ state }: { state: LibraryState }) {
                   aria-label={t("address")}
                   placeholder={t("address")}
                   value={address}
-                  onChange={(e) => setAddress(e.target.value)}
+                  onChange={(e) => {
+                    setAddress(e.target.value);
+                    suggest(e.target.value);
+                  }}
+                  onFocus={() => suggest(address)}
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-haspopup="listbox"
+                  aria-expanded={
+                    browser.pickerOpen && browser.pickerMode === "address"
+                  }
+                  onKeyDown={(e) => {
+                    if (e.nativeEvent.isComposing) return;
+                    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                      e.preventDefault();
+                      if (
+                        browser.pickerOpen &&
+                        browser.pickerMode === "address"
+                      )
+                        void act(
+                          "address-step",
+                          e.key === "ArrowDown" ? 1 : -1,
+                        );
+                      else suggest(address);
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      void act("tabs-dismiss");
+                    }
+                  }}
                   autoComplete="off"
                   spellCheck={false}
                   aria-invalid={!!error}
                   aria-describedby={error ? "error" : undefined}
                 />
+                <InputGroupAddon align="inline-end">
+                  <IconButton
+                    label={t(
+                      browser.bookmarks?.some((b) => b.url === current.url)
+                        ? "removeBookmark"
+                        : "bookmarkPage",
+                    )}
+                    disabled={!/^https?:/.test(current.url)}
+                    onClick={() => void act("bookmark-toggle")}
+                  >
+                    <StarIcon
+                      weight={
+                        browser.bookmarks?.some((b) => b.url === current.url)
+                          ? "fill"
+                          : "regular"
+                      }
+                    />
+                  </IconButton>
+                </InputGroupAddon>
                 {error && (
                   <InputGroupAddon align="inline-end">
                     <span id="error" role="alert">
@@ -366,7 +591,26 @@ function Shell({ state }: { state: LibraryState }) {
                   </InputGroupAddon>
                 )}
               </InputGroup>
+              {current.zoom !== undefined && current.zoom !== 100 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-label={t("resetZoom")}
+                  onClick={() => void act("zoom", 0)}
+                >
+                  {current.zoom}%
+                </Button>
+              )}
+              <IconButton
+                label={t("browserMore")}
+                onClick={() => void act("page-menu")}
+              >
+                <DotsThreeIcon />
+              </IconButton>
             </form>
+            {current.find?.open && (
+              <BrowserFind key={current.id} tab={current} act={act} />
+            )}
             {(current.url === "about:blank" || !current.url) && (
               <div className="new-tab-page">
                 <span className="mark" />

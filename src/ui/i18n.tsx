@@ -1,3 +1,4 @@
+import { browserMessages } from "../shared/browser-messages";
 import { createContext, useContext } from "react";
 import type { Language } from "../shared/model";
 import { oauthMessages } from "../shared/oauth-messages";
@@ -7,6 +8,7 @@ import { organizationMessages } from "../shared/organization-messages";
 import { captureMessages } from "../shared/capture-messages";
 import { seriesMessages } from "../shared/series-messages";
 export const en = {
+  ...browserMessages.en,
   lanHTTP: "Allow HTTP on the same local network",
   lanHTTPHelp:
     "Prefer a reachable NAS on this network; otherwise use the HTTPS cloud proxy. HTTP sends authentication unencrypted on the local network.",
@@ -359,6 +361,7 @@ export const en = {
 };
 export type Message = keyof typeof en;
 export const zh: Record<Message, string> = {
+  ...browserMessages.zh,
   lanHTTP: "允许同一局域网 HTTP 直连",
   lanHTTPHelp:
     "优先连接同一局域网内可达的 NAS，否则使用 HTTPS 云代理。HTTP 会在局域网内明文传输认证信息。",
