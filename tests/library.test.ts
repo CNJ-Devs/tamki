@@ -333,6 +333,41 @@ test("ZSpace rejects changed lengths and wrong offsets when reading media", asyn
   );
 });
 
+test("ZSpace accepts a null next offset only at the verified end of the file", async () => {
+  const provider = new ZSpaceProvider(
+    async () => ({
+      path: "/pool/movie.mp4",
+      offset: 4,
+      size: 8,
+      bytes: 4,
+      next_offset: null,
+      encoding: "base64",
+      content: Buffer.from("tail").toString("base64"),
+    }),
+    ["/pool"],
+  );
+  assert.equal(
+    Buffer.from(await provider.read("/pool/movie.mp4", 4, 4, 8)).toString(),
+    "tail",
+  );
+  const premature = new ZSpaceProvider(
+    async () => ({
+      path: "/pool/movie.mp4",
+      offset: 0,
+      size: 8,
+      bytes: 4,
+      next_offset: null,
+      encoding: "base64",
+      content: Buffer.from("head").toString("base64"),
+    }),
+    ["/pool"],
+  );
+  await assert.rejects(
+    premature.read("/pool/movie.mp4", 0, 4, 8),
+    /mediaChanged/,
+  );
+});
+
 test("official-tool authorization uses stdin, parses multiline completion, and can be cancelled", async () => {
   const { chmod } = await import("node:fs/promises");
   const { ZSpaceCLI } = await import("../src/providers/zspace");
@@ -409,11 +444,11 @@ test("older applications refuse a newer database without downgrading its version
   const file = path.join(temporary, "library.sqlite");
   try {
     const db = new DatabaseSync(file);
-    db.exec("PRAGMA user_version=2");
+    db.exec("PRAGMA user_version=3");
     db.close();
     assert.throws(() => new LibraryStore(file), /databaseNewer/);
     const read = new DatabaseSync(file, { readOnly: true });
-    assert.equal(read.prepare("PRAGMA user_version").get()!.user_version, 2);
+    assert.equal(read.prepare("PRAGMA user_version").get()!.user_version, 3);
     read.close();
   } finally {
     await rm(temporary, { recursive: true, force: true });

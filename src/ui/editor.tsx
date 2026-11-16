@@ -1,3 +1,4 @@
+import { episodeVersions } from "../shared/versions";
 import { useState } from "react";
 import {
   MagnifyingGlassIcon,
@@ -277,14 +278,26 @@ export function MetadataEditor({
                   onChange={(e) => setEpisode({ description: e.target.value })}
                 />
               </FormField>
-              <div className="file-facts">
-                <span>{t("fileName")}</span>
-                <TextTip>{episode.fileName}</TextTip>
-                <span>{t("duration")}</span>
-                <span>{clock(episode.duration)}</span>
-                <span>{t("location")}</span>
-                <TextTip>{`${state.connections.find((c) => c.id === episode.connectionId)?.name || t("offline")} · ${episode.path}`}</TextTip>
-              </div>
+              {episodeVersions(episode).map((version, index) => (
+                <div key={version.id} className="episode-version-facts">
+                  {(episode.versions?.length || 0) > 1 && (
+                    <strong>
+                      {version.label ||
+                        t("versionNumber").replace("{n}", String(index + 1))}
+                    </strong>
+                  )}
+                  {version.files.map((file) => (
+                    <div key={file.id} className="file-facts">
+                      <span>{t("fileName")}</span>
+                      <TextTip>{file.fileName}</TextTip>
+                      <span>{t("duration")}</span>
+                      <span>{clock(file.duration)}</span>
+                      <span>{t("location")}</span>
+                      <TextTip>{`${state.connections.find((c) => c.id === file.connectionId)?.name || t("offline")} · ${file.path}`}</TextTip>
+                    </div>
+                  ))}
+                </div>
+              ))}
             </FieldGroup>
           ) : tab === "work" ? (
             <FieldGroup>
@@ -398,6 +411,7 @@ export function MetadataEditor({
         <RecognitionFlow
           work={draft}
           config={state.settings.recognition}
+          connections={state.settings.aiConnections}
           episodeId={episode?.id}
           draftInput={editInput(draft)}
           onApply={async (value) => {

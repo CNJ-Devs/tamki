@@ -17,8 +17,14 @@ contextBridge.exposeInMainWorld("tamki", {
     subscribe("browser:state", callback),
   onLibrary: (callback: (state: unknown) => void) =>
     subscribe("library:state", callback),
+  onDownloads: (callback: (jobs: unknown) => void) =>
+    subscribe("library:downloads", callback),
   onFocusAddress: (callback: () => void) =>
     subscribe("browser:focus-address", callback),
   onFocusTabs: (callback: () => void) =>
     subscribe("browser:focus-tabs", callback),
+  onPlayDownload: (callback: (value: unknown) => void) =>
+    subscribe("browser:play-download", callback),
+  onOpenPage: (callback: (page: unknown) => void) =>
+    subscribe("browser:open-page", callback),
 });

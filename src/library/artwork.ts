@@ -2,19 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-/** Only verified image CDNs; never forward API credentials or follow redirects. */
-export function artworkURL(value: string): string {
-  const url = new URL(value);
-  if (
-    url.protocol !== "https:" ||
-    url.username ||
-    url.password ||
-    url.port ||
-    !["lain.bgm.tv", "image.bgm.tv", "image.tmdb.org"].includes(url.hostname)
-  )
-    throw new Error("artworkUnavailable");
-  return url.href;
-}
+import { artworkURL, publicArtworkFetch } from "./artwork-fetch";
+import { pageArtwork } from "./artwork-page";
+import { logEvent, observedFetch } from "../diagnostics";
+export { artworkURL } from "./artwork-fetch";
 function imageType(data: Buffer) {
   if (
     data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
@@ -32,14 +23,84 @@ function imageType(data: Buffer) {
 export class ArtworkCache {
   constructor(
     private directory: string,
-    private request: typeof fetch = fetch,
+    private request: typeof fetch = observedFetch(publicArtworkFetch),
   ) {}
+  async resolve(
+    cover: string | null | undefined,
+    page: string | null | undefined,
+    signal: AbortSignal,
+  ) {
+    const bounded = AbortSignal.any([signal, AbortSignal.timeout(45000)]);
+    bounded.throwIfAborted();
+    if (cover)
+      try {
+        const key = await this.cache(cover, bounded);
+        logEvent("artwork.resolve.done", { phase: "direct" });
+        return key;
+      } catch {
+        bounded.throwIfAborted();
+        logEvent("artwork.resolve.fallback", {
+          phase: "direct",
+          reason: "unavailable",
+        });
+      }
+    if (page) {
+      const url = artworkURL(page);
+      const response = await this.request(url, {
+        signal: bounded,
+        redirect: "error",
+        credentials: "omit",
+        headers: { Accept: "text/html" },
+      });
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("artworkUnavailable");
+      const chunks: Uint8Array[] = [];
+      let bytes = 0;
+      try {
+        if (
+          !response.ok ||
+          !/^text\/html(?:;|$)/i.test(
+            response.headers.get("content-type") || "",
+          )
+        )
+          throw new Error("artworkUnavailable");
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          bytes += value.length;
+          if (bytes > 2 * 1024 * 1024) throw new Error("artworkUnavailable");
+          chunks.push(value);
+        }
+      } finally {
+        await reader.cancel().catch(() => {});
+      }
+      const candidates = pageArtwork(
+        Buffer.concat(chunks).toString("utf8"),
+        response.url || url,
+      );
+      logEvent("artwork.page.parsed", {
+        phase: "page",
+        issues: candidates.length,
+      });
+      for (const candidate of candidates)
+        try {
+          const key = await this.cache(candidate, bounded);
+          logEvent("artwork.resolve.done", { phase: "page" });
+          return key;
+        } catch {
+          bounded.throwIfAborted();
+        }
+    }
+    logEvent("artwork.resolve.failed", { reason: "unavailable" }, "warn");
+    throw new Error("artworkUnavailable");
+  }
   async read(key: string) {
     if (!/^[a-f0-9]{64}$/.test(key)) throw new Error("artworkUnavailable");
     const data = await readFile(path.join(this.directory, key));
     return { data, type: imageType(data) };
   }
   async cache(value: string, signal: AbortSignal) {
+    signal.throwIfAborted();
     const url = artworkURL(value);
     const key = createHash("sha256").update(url).digest("hex");
     if (await this.read(key).catch(() => null)) return key;

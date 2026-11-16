@@ -20,6 +20,7 @@ export const connectionSchema = z
     name: z.string().trim().min(1).max(100),
     roots: z.array(location).min(1).max(64),
     scanDepths: z.record(location, z.number().int().min(0).max(32)).optional(),
+    allowLANHTTP: z.boolean().optional(),
     draftId: id.optional(),
   })
   .strict();
@@ -53,9 +54,15 @@ export const editSchema = z
       .max(10000),
   })
   .strict();
-export const progressSchema = z
+export const mediaSelectionSchema = z
   .object({
     id,
+    versionId: id.optional(),
+    fileId: id.optional(),
+  })
+  .strict();
+export const progressSchema = mediaSelectionSchema
+  .extend({
     position: z.number().finite().min(0).max(1e8),
     duration: z.number().finite().positive().max(1e8),
     resume: z.boolean().default(true),
@@ -66,5 +73,10 @@ export const collectionSchema = z
     id: id.optional(),
     name: z.string().trim().min(1).max(100),
     workIds: z.array(id).max(100000),
+    seriesIds: z.array(id).max(10000).optional(),
   })
   .strict();
+
+export const seriesSchema = collectionSchema
+  .omit({ seriesIds: true })
+  .extend({ workIds: z.array(id).min(1).max(10000) });

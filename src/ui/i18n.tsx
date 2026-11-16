@@ -1,6 +1,43 @@
 import { createContext, useContext } from "react";
 import type { Language } from "../shared/model";
+import { oauthMessages } from "../shared/oauth-messages";
+import { accountMessages } from "../shared/account-messages";
+import { aiConnectionMessages } from "../shared/ai-connection-messages";
+import { organizationMessages } from "../shared/organization-messages";
+import { captureMessages } from "../shared/capture-messages";
+import { seriesMessages } from "../shared/series-messages";
 export const en = {
+  lanHTTP: "Allow HTTP on the same local network",
+  lanHTTPHelp:
+    "Prefer a reachable NAS on this network; otherwise use the HTTPS cloud proxy. HTTP sends authentication unencrypted on the local network.",
+  recognitionFeedback: "Refine with feedback",
+  recognitionFeedbackLabel: "Corrections or references",
+  recognitionFeedbackPlaceholder:
+    "Describe what to correct or verify. You can paste reference page or image links.",
+  recognitionRefine: "Identify again",
+  recognitionFeedbackLimit:
+    "This review has reached its feedback limit. Start a new identification with a summary.",
+  ...seriesMessages.en,
+  scrollPrevious: "Scroll left",
+  scrollNext: "Scroll right",
+  playerSeries: "Series works",
+  playerIncompleteDirectory:
+    "Some related works could not be loaded. Reopen playback from the original page to refresh.",
+  playbackQuality: "Quality",
+  retryPlayback: "Retry playback",
+  onlinePlaybackFailed:
+    "Online video could not be loaded. Retry or check playback on the original page.",
+  playbackVersion: "Version",
+  versionNumber: "Version {n}",
+  versionCount: "{n} versions",
+  organizationVersionGrouping: "Episode / version grouping",
+  episodeVersionCount:
+    "{episodes} episodes · {versions} versions · {files} files",
+  ...captureMessages.en,
+  ...organizationMessages.en,
+  ...oauthMessages.en,
+  ...accountMessages.en,
+  ...aiConnectionMessages.en,
   retryRecognition: "Retry identification",
   cover: "Cover",
   automaticRecognition: "Identify new media automatically",
@@ -8,6 +45,7 @@ export const en = {
   autoQueued: "Waiting for identification",
   autoRunning: "Identifying metadata",
   autoComplete: "Metadata identified",
+  autoNoMatch: "No matching work found",
   autoChoice: "Confirm the matching work",
   autoFailed: "Identification failed",
   autoLocal: "Filename only · no online metadata",
@@ -42,12 +80,15 @@ export const en = {
   recognitionSourceMissing: "This recognition source is no longer available.",
   recognitionFailed:
     "Recognition failed. Check the service and model settings.",
+  recognitionEmpty:
+    "The service completed without returning a result. Nothing was changed.",
   recognitionInvalid:
     "The service returned an invalid result. No information was changed.",
   recognitionScopeInvalid:
     "The result contains mismatched files or information outside this request. Nothing was changed.",
   recognitionTruncated:
     "The result was cut short. Increase the output token limit or identify fewer files.",
+  recognitionContextLimit: "This request exceeds the model's context limit.",
   recognitionTooLarge:
     "The response is too large. Identify a smaller selection.",
   recognitionBusy: "Wait for another recognition request to finish.",
@@ -66,13 +107,15 @@ export const en = {
   parserGeneral: "General · video-filename-parser",
   parserAnime: "Anime · Anitomy",
   defaultSource: "Default recognition source",
+  sourceSettings: "Source settings",
+  sourceAvailable: "Ready to use",
   customSources: "Custom sources",
   addSource: "Add source",
   editSource: "Edit source",
   removeSource: "Remove source",
   removeSourceTitle: "Remove this source?",
   removeSourceBody:
-    "The saved credentials will be removed. Existing library information is kept.",
+    "This recognition source will be removed. Its AI connection and existing library information are kept.",
   noCustomSources: "No custom sources",
   sourceType: "Source type",
   compatibleProvider: "OpenAI Compatible",
@@ -254,6 +297,7 @@ export const en = {
   noFolders: "No folders",
   noVideos: "No videos",
   selectStorage: "Select storage",
+  emptyGroupList: "Nothing here yet",
   collections: "Collections",
   newCollection: "New collection",
   manageCollections: "Manage collections",
@@ -315,6 +359,34 @@ export const en = {
 };
 export type Message = keyof typeof en;
 export const zh: Record<Message, string> = {
+  lanHTTP: "允许同一局域网 HTTP 直连",
+  lanHTTPHelp:
+    "优先连接同一局域网内可达的 NAS，否则使用 HTTPS 云代理。HTTP 会在局域网内明文传输认证信息。",
+  recognitionFeedback: "补充意见",
+  recognitionFeedbackLabel: "调整意见或参考资料",
+  recognitionFeedbackPlaceholder:
+    "说明需要调整或核实的内容，也可以粘贴参考页面或图片链接。",
+  recognitionRefine: "再次识别",
+  recognitionFeedbackLimit: "本轮补充次数已达上限，请汇总意见后重新识别。",
+  ...seriesMessages.zh,
+  scrollPrevious: "向左翻页",
+  scrollNext: "向右翻页",
+  playerSeries: "系列作品",
+  playerIncompleteDirectory:
+    "部分相关作品目录未加载成功，可回原网页重新打开播放以刷新。",
+  playbackQuality: "清晰度",
+  retryPlayback: "重试播放",
+  onlinePlaybackFailed: "在线视频加载失败，请重试或检查原网页能否播放。",
+  playbackVersion: "版本",
+  versionNumber: "版本 {n}",
+  versionCount: "{n} 个版本",
+  organizationVersionGrouping: "分集 / 版本归并",
+  episodeVersionCount: "{episodes} 集 · {versions} 个版本 · {files} 个文件",
+  ...captureMessages.zh,
+  ...organizationMessages.zh,
+  ...oauthMessages.zh,
+  ...accountMessages.zh,
+  ...aiConnectionMessages.zh,
   retryRecognition: "重试识别",
   cover: "封面",
   automaticRecognition: "自动识别新入库内容",
@@ -322,6 +394,7 @@ export const zh: Record<Message, string> = {
   autoQueued: "等待识别",
   autoRunning: "正在识别信息",
   autoComplete: "已识别信息",
+  autoNoMatch: "识别过，未找到匹配作品",
   autoChoice: "需要确认匹配作品",
   autoFailed: "识别失败",
   autoLocal: "仅解析文件名 · 无联网信息",
@@ -354,11 +427,13 @@ export const zh: Record<Message, string> = {
   tmdbKeyRequired: "请先配置 TMDB API 读取访问令牌。",
   recognitionSourceMissing: "这个识别来源已不可用。",
   recognitionFailed: "识别失败，请检查服务和模型配置。",
+  recognitionEmpty: "服务已结束响应，但未返回结果，未修改任何信息。",
   recognitionInvalid: "服务返回的结果格式不正确，未修改任何信息。",
   recognitionScopeInvalid:
     "结果包含不匹配的文件或超出本次范围的信息，未作修改。",
   recognitionTruncated:
     "识别结果被截断，请提高输出 token 上限或减少单次识别的文件。",
+  recognitionContextLimit: "本次请求超出模型的上下文容量。",
   recognitionTooLarge: "返回内容过大，请减少单次识别范围。",
   recognitionBusy: "请等待其他识别请求完成。",
   recognitionCancelled: "已取消识别。",
@@ -376,12 +451,14 @@ export const zh: Record<Message, string> = {
   parserGeneral: "通用 · video-filename-parser",
   parserAnime: "动画 · Anitomy",
   defaultSource: "默认识别来源",
+  sourceSettings: "来源配置",
+  sourceAvailable: "可直接使用",
   customSources: "自定义来源",
   addSource: "添加来源",
   editSource: "编辑来源",
   removeSource: "移除来源",
   removeSourceTitle: "移除此来源？",
-  removeSourceBody: "将删除保存的凭据，片库中的已有信息会保留。",
+  removeSourceBody: "将移除此识别来源，AI 连接和片库中的已有信息会保留。",
   noCustomSources: "暂无自定义来源",
   sourceType: "来源类型",
   compatibleProvider: "OpenAI 兼容接口",
@@ -558,6 +635,7 @@ export const zh: Record<Message, string> = {
   noFolders: "没有子目录",
   noVideos: "没有视频",
   selectStorage: "选择存储",
+  emptyGroupList: "暂无内容",
   collections: "合集",
   newCollection: "新建合集",
   manageCollections: "合集管理",

@@ -6,7 +6,11 @@ import {
   CaretRightIcon,
 } from "@phosphor-icons/react";
 import type { Connection, Entry } from "../shared/model";
-import type { SettingsState, SaveRule } from "../shared/settings";
+import {
+  defaultDownloadLimits,
+  type SettingsState,
+  type SaveRule,
+} from "../shared/settings";
 import {
   Button,
   Choice,
@@ -190,6 +194,47 @@ export function SavePreferences({
   return (
     <>
       <FieldGroup>
+        <details>
+          <summary>{t("advanced")}</summary>
+          <FieldGroup>
+            {(["downloads", "saves", "cacheGiB"] as const).map((key) => {
+              const limits = settings.downloadLimits || defaultDownloadLimits;
+              const label = t(
+                key === "downloads"
+                  ? "parallelDownloads"
+                  : key === "saves"
+                    ? "parallelSaves"
+                    : "downloadCacheLimit",
+              );
+              return (
+                <FormField key={key} label={label}>
+                  <Choice
+                    label={label}
+                    value={String(limits[key])}
+                    options={(key === "downloads"
+                      ? [1, 2, 3, 4, 5, 6]
+                      : key === "saves"
+                        ? [1, 2, 3]
+                        : [5, 10, 20, 50, 100]
+                    ).map((n) => ({
+                      value: String(n),
+                      label: key === "cacheGiB" ? `${n} GiB` : String(n),
+                    }))}
+                    onChange={(value) =>
+                      void window.tamki
+                        .library("download-limits", {
+                          ...limits,
+                          [key]: Number(value),
+                        })
+                        .catch((e) => toast.error(errorMessage(e, t)))
+                    }
+                  />
+                </FormField>
+              );
+            })}
+            <p>{t("downloadLimitsHint")}</p>
+          </FieldGroup>
+        </details>
         {(["series", "video"] as const).map((kind) => {
           const pref = settings.downloads[kind],
             follow = pref.mode === "last",

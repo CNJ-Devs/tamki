@@ -1,6 +1,6 @@
-import { useState, type ComponentProps } from "react";
+import { useEffect, useRef, useState, type ComponentProps } from "react";
 import { ArrowClockwiseIcon } from "@phosphor-icons/react";
-import { Button, Choice, Fade, FormField, Modal } from "./common";
+import { Button, Choice, Fade, FormField, Modal, Tip } from "./common";
 import { Input } from "./components/ui/input";
 import { Checkbox } from "./components/ui/checkbox";
 import { Field, FieldGroup, FieldLabel } from "./components/ui/field";
@@ -12,51 +12,123 @@ import {
 } from "./components/ui/accordion";
 import { TagEditor } from "./tag-editor";
 import {
-  providers,
   newSource,
   sourceConfig,
-  sourceSchema,
+  searchSettingsKey,
+  usesAccount,
+  type OAuthAccount,
   type CustomSource,
-  type SourceConfig,
   type ModelOption,
 } from "../shared/settings";
+import { connectionConfig, type AIConnection } from "../shared/ai-connections";
+import {
+  recognitionSourceConfig,
+  recognitionSourceSchema,
+  resolveRecognitionSource,
+  type RecognitionSourceConfig,
+} from "../shared/recognition-source";
 import { errorMessage, useI18n, type Message } from "./i18n";
 
 export function SourceEditor({
   initial,
   isNew,
+  connections,
+  onConnections,
   onClose,
 }: {
   initial: CustomSource;
   isNew: boolean;
+  connections: AIConnection[];
+  onConnections(): void;
   onClose(): void;
 }) {
   const t = useI18n();
-  const [source, setSource] = useState(() => sourceConfig(initial)),
-    [models, setModels] = useState(initial.models),
-    [apiKey, setApiKey] = useState(""),
-    [searchKey, setSearchKey] = useState(""),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState<{ field: string; message: string } | null>(
-      null,
-    ),
-    [advanced, setAdvanced] = useState("");
+  const [draft, setDraft] = useState<RecognitionSourceConfig>(() => ({
+    ...recognitionSourceConfig(initial),
+    connectionId: initial.connectionId || (isNew ? "" : initial.id),
+  }));
+  const connection = connections.find((c) => c.id === draft.connectionId);
+  const source = {
+    ...sourceConfig(initial),
+    ...(connection ? connectionConfig(connection) : {}),
+    ...draft,
+  };
+  const [models, setModels] = useState(initial.models);
+  const [searchKey, setSearchKey] = useState("");
+  const [activity, setActivity] = useState<"models" | "search" | "save" | null>(
+    null,
+  );
+  const [error, setError] = useState<{ field: string; message: string } | null>(
+    null,
+  );
+  const [advanced, setAdvanced] = useState("");
+  const [verified, setVerified] = useState<{
+    connectionId: string;
+    account: OAuthAccount;
+  } | null>(null);
+  const busy = activity !== null;
+  const account =
+    verified && verified.connectionId === connection?.id
+      ? verified.account
+      : connection?.account;
+  const connectedSource = usesAccount(source.provider);
+  const usable =
+    !!connection &&
+    (connectedSource
+      ? connection.account?.status === "connected"
+      : connection.auth === "none" || connection.hasKey);
   const official = source.provider !== "openai-compatible",
-    searching = source.searchMode !== "none",
+    oauth = source.provider === "openai-oauth",
+    google = source.provider === "gemini-oauth",
+    claude = source.provider === "claude-code";
+  const searching = source.searchMode !== "none",
     external = source.searchMode === "external",
     standalone = external || source.provider === "deepseek";
-  const change = <K extends keyof SourceConfig>(
+  const alive = useRef(true);
+  const revision = useRef(0);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const change = <K extends keyof RecognitionSourceConfig>(
     key: K,
-    value: SourceConfig[K],
+    value: RecognitionSourceConfig[K],
   ) => {
-    setSource((s) => ({ ...s, [key]: value }));
+    setDraft((s) => ({ ...s, [key]: value }));
     setError(null);
   };
-  const fieldId = (key: string) => "source-" + key;
+  const selectConnection = (id: string) => {
+    const next = connections.find((c) => c.id === id);
+    if (!next) return;
+    revision.current++;
+    const defaults = recognitionSourceConfig({
+      ...newSource(next.provider),
+      hasKey: false,
+      hasSearchKey: false,
+      models: [],
+    });
+    setDraft((s) => ({
+      ...(connection?.provider === next.provider &&
+      connection.protocol === next.protocol
+        ? s
+        : defaults),
+      id: s.id,
+      name: s.name || next.name,
+      connectionId: id,
+      model: "",
+    }));
+    setModels(next.models);
+    setSearchKey("");
+    setVerified(null);
+    setError(null);
+  };
   const message = (key: string) =>
     error?.field === key ? error.message : undefined;
+  const fieldId = (key: string) => "source-" + key;
   const input = (
-    key: keyof SourceConfig,
+    key: keyof RecognitionSourceConfig,
     label: Message,
     props: ComponentProps<typeof Input> = {},
   ) => (
@@ -64,7 +136,7 @@ export function SourceEditor({
       <Input
         id={fieldId(key)}
         disabled={busy}
-        value={source[key] as string | number}
+        value={draft[key] as string | number}
         aria-invalid={!!message(key)}
         onChange={(e) => change(key, e.target.value as never)}
         {...props}
@@ -72,24 +144,23 @@ export function SourceEditor({
     </FormField>
   );
   const select = (
-    key: keyof SourceConfig,
+    key: keyof RecognitionSourceConfig,
     label: Message,
     options: { value: string; label: string; disabled?: boolean }[],
-    disabled = false,
   ) => (
-    <FormField label={t(label)} error={message(key)}>
+    <FormField label={t(label)} htmlFor={fieldId(key)} error={message(key)}>
       <Choice
         id={fieldId(key)}
-        value={String(source[key])}
+        value={String(draft[key])}
         label={t(label)}
-        disabled={disabled || busy}
+        disabled={busy}
         options={options}
         onChange={(v) => change(key, v as never)}
       />
     </FormField>
   );
   const number = (
-    key: keyof SourceConfig,
+    key: keyof RecognitionSourceConfig,
     label: Message,
     min: number,
     max: number,
@@ -106,102 +177,131 @@ export function SourceEditor({
           (e.target.value === "" ? NaN : Number(e.target.value)) as never,
         ),
     });
-  const check = (key: keyof SourceConfig, label: Message) => (
+  const check = (key: keyof RecognitionSourceConfig, label: Message) => (
     <Field orientation="horizontal">
       <Checkbox
         id={fieldId(key)}
-        checked={source[key] === true}
+        disabled={busy}
+        checked={draft[key] === true}
         onCheckedChange={(v) => change(key, (v === true) as never)}
       />
       <FieldLabel htmlFor={fieldId(key)}>{t(label)}</FieldLabel>
     </Field>
   );
   const fail = (e: unknown) => {
-    const m = errorMessage(e, t),
-      raw = e instanceof Error ? e.message : String(e);
-    const field =
-      raw === "keyRequired" || raw === "sourceUnauthorized"
-        ? "apiKey"
-        : raw === "searchKeyRequired"
-          ? "searchKey"
-          : raw === "chooseModel" || raw === "modelListFailed"
-            ? "model"
-            : raw === "outputLimitExceeded"
-              ? "maxOutputTokens"
-              : "form";
+    const raw = e instanceof Error ? e.message : String(e);
+    const field = [
+      "aiConnectionMissing",
+      "aiConnectionChanged",
+      "accountSignInRequired",
+      "oauthSignInRequired",
+      "oauthPlanRequired",
+      "keyRequired",
+      "sourceUnauthorized",
+    ].includes(raw)
+      ? "connectionId"
+      : raw === "searchKeyRequired"
+        ? "searchKey"
+        : ["chooseModel", "modelListFailed"].includes(raw)
+          ? "model"
+          : raw === "outputLimitExceeded"
+            ? "maxOutputTokens"
+            : "form";
     if (field === "maxOutputTokens") setAdvanced("advanced");
-    setError({ field, message: m });
+    setError({ field, message: errorMessage(e, t) });
   };
   const validate = () => {
-    const result = sourceSchema.safeParse(source);
-    if (result.success) return true;
-    const field = String(result.error.issues[0].path[0] || "form");
-    setError({ field, message: t("invalidInput") });
-    if (
-      [
-        "timeoutSeconds",
-        "maxOutputTokens",
-        "domains",
-        "country",
-        "resultCount",
-        "maxPages",
-        "maxSearches",
-      ].includes(field)
-    )
-      setAdvanced("advanced");
-    return false;
-  };
-  const payload = () => ({
-    source,
-    apiKey: apiKey || undefined,
-    searchKey: searchKey || undefined,
-  });
-  const load = async () => {
-    if (!validate()) return;
-    setBusy(true);
-    setError(null);
+    if (!connection) {
+      setError({ field: "connectionId", message: t("chooseAIConnection") });
+      return false;
+    }
+    const result = recognitionSourceSchema.safeParse(draft);
+    if (!result.success) {
+      const field = String(result.error.issues[0].path[0] || "form");
+      setError({ field, message: t("invalidInput") });
+      if (
+        ![
+          "name",
+          "connectionId",
+          "model",
+          "searchMode",
+          "searchEndpoint",
+        ].includes(field)
+      )
+        setAdvanced("advanced");
+      return false;
+    }
     try {
-      const list = await window.tamki.library<ModelOption[]>(
-        "source-models",
-        payload(),
-      );
-      setModels(list);
-      if (!list.some((m) => m.id === source.model)) change("model", "");
-      if (!list.length) setError({ field: "model", message: t("chooseModel") });
+      resolveRecognitionSource(result.data, connection);
+      return true;
     } catch (e) {
       fail(e);
-    } finally {
-      setBusy(false);
+      return false;
     }
   };
-  const save = async () => {
+  const run = async (action: "models" | "search" | "save") => {
     if (!validate()) return;
-    setBusy(true);
+    const version = revision.current;
+    const current = () => alive.current && version === revision.current;
+    setActivity(action);
     setError(null);
     try {
-      await window.tamki.library("save-source", payload());
-      onClose();
+      const payload = {
+        source: draft,
+        ...(external && searchKey ? { searchKey } : {}),
+      };
+      if (action === "models") {
+        const list = await window.tamki.library<ModelOption[]>(
+          "recognition-source-models",
+          payload,
+        );
+        if (!current()) return;
+        setModels(list);
+        if (!list.some((m) => m.id === draft.model)) change("model", "");
+        if (!list.length)
+          setError({ field: "model", message: t("chooseModel") });
+      } else if (action === "search") {
+        setVerified(null);
+        const result = await window.tamki.library<OAuthAccount>(
+          "recognition-source-search",
+          payload,
+        );
+        if (current())
+          setVerified({ connectionId: draft.connectionId, account: result });
+      } else {
+        await window.tamki.library("save-recognition-source", payload);
+        if (current()) onClose();
+      }
     } catch (e) {
-      fail(e);
+      if (current()) fail(e);
     } finally {
-      setBusy(false);
+      if (current()) setActivity(null);
     }
   };
   return (
     <Modal
       open
       title={t(isNew ? "addSource" : "editSource")}
-      onClose={onClose}
+      onClose={() => !busy && onClose()}
       className="source-config-modal"
       footer={
         <>
           <span role="status" className="modal-status">
-            {error?.field === "form" ? error.message : busy ? t("loading") : ""}
+            {error?.field === "form"
+              ? error.message
+              : activity === "search"
+                ? t("oauthSearchTesting")
+                : busy
+                  ? t("loading")
+                  : ""}
           </span>
-          <Button variant="secondary" onClick={onClose}>
+          <Button variant="secondary" disabled={busy} onClick={onClose}>
             {t("cancel")}
           </Button>
-          <Button disabled={busy} onClick={() => void save()}>
+          <Button
+            disabled={busy || !usable || !draft.model}
+            onClick={() => void run("save")}
+          >
             {t("save")}
           </Button>
         </>
@@ -209,249 +309,253 @@ export function SourceEditor({
     >
       <Fade className="modal-body">
         <FieldGroup>
-          <FormField label={t("sourceType")}>
-            <Choice
-              disabled={!isNew || busy}
-              value={source.provider}
-              label={t("sourceType")}
-              options={providers.map((p) => ({
-                value: p.id,
-                label:
-                  p.id === "openai-compatible"
-                    ? t("compatibleProvider")
-                    : p.name,
-              }))}
-              onChange={(provider) => {
-                setSource({
-                  ...newSource(provider as SourceConfig["provider"]),
-                  id: source.id,
-                });
-                setApiKey("");
-                setSearchKey("");
-                setModels([]);
-                setError(null);
-              }}
-            />
-          </FormField>
-          {input("name", "name", { maxLength: 100 })}
-          {!official ? (
-            <>
-              {select("protocol", "protocol", [
-                { value: "chat-completions", label: "Chat Completions" },
-                { value: "responses", label: "Responses" },
-              ])}
-              {input("endpoint", "endpoint", {
-                type: "url",
-                onChange: (e) => {
-                  change("endpoint", e.target.value);
-                  setApiKey("");
-                  setModels([]);
-                },
-              })}
-              {select("auth", "authMethod", [
-                { value: "bearer", label: "Bearer Token" },
-                { value: "x-api-key", label: "API Key" },
-                { value: "none", label: t("noAuth") },
-              ])}
-            </>
-          ) : null}
-          {official || source.auth !== "none" ? (
-            <FormField
-              label={t("apiKey")}
-              htmlFor="source-apiKey"
-              error={message("apiKey")}
-            >
-              <Input
-                id="source-apiKey"
-                disabled={busy}
-                type="password"
-                autoComplete="off"
-                value={apiKey}
-                placeholder={
-                  initial.hasKey && source.endpoint === initial.endpoint
-                    ? t("configured")
-                    : ""
-                }
-                aria-invalid={!!message("apiKey")}
-                onChange={(e) => {
-                  setApiKey(e.target.value);
-                  setModels([]);
-                  setError(null);
-                }}
-              />
-            </FormField>
-          ) : null}
-          <FormField label={t("model")} error={message("model")}>
+          {input("name", "name")}
+          <FormField
+            label={t("aiConnection")}
+            htmlFor="source-connectionId"
+            error={message("connectionId")}
+          >
             <div className="model-control">
               <Choice
-                id="source-model"
-                disabled={!models.length || busy}
-                value={source.model}
-                label={t("model")}
-                placeholder={t("selectModel")}
-                options={models.map((m) => ({ value: m.id, label: m.name }))}
-                onChange={(model) => {
-                  const limit = models.find((m) => m.id === model)?.outputLimit;
-                  setSource((s) => ({
-                    ...s,
-                    model,
-                    maxOutputTokens: limit
-                      ? Math.min(limit, s.maxOutputTokens)
-                      : s.maxOutputTokens,
-                  }));
-                  setError(null);
-                }}
+                id="source-connectionId"
+                label={t("aiConnection")}
+                value={draft.connectionId}
+                placeholder={t(
+                  connections.length ? "chooseAIConnection" : "noAIConnections",
+                )}
+                disabled={busy || !connections.length}
+                options={connections.map((c) => ({
+                  value: c.id,
+                  label:
+                    c.name +
+                    (usesAccount(c.provider) &&
+                    c.account?.status !== "connected"
+                      ? " · " + t("oauthSignedOut")
+                      : ""),
+                }))}
+                onChange={selectConnection}
               />
               <Button
                 variant="secondary"
                 disabled={busy}
-                onClick={() => void load()}
+                onClick={onConnections}
               >
-                <ArrowClockwiseIcon data-icon="inline-start" />
-                {t("loadModels")}
+                {t("manageAIConnections")}
               </Button>
             </div>
           </FormField>
-          {official ? (
-            <Field orientation="horizontal">
-              <Checkbox
-                id="source-web-search"
-                checked={searching}
-                onCheckedChange={(v) =>
-                  change("searchMode", v ? "native" : "none")
-                }
-              />
-              <FieldLabel htmlFor="source-web-search">
-                {t("webSearch")}
-              </FieldLabel>
-            </Field>
-          ) : (
-            select("searchMode", "webSearch", [
-              { value: "none", label: t("searchOff") },
-              {
-                value: "native",
-                label: t("nativeSearch"),
-                disabled: source.protocol !== "responses",
-              },
-              { value: "external", label: t("externalSearch") },
-            ])
-          )}
-          {external ? (
+          {connection ? (
             <>
-              <FormField label={t("searchService")}>
-                <Choice
-                  label={t("searchService")}
-                  value="deepseek"
-                  options={[{ value: "deepseek", label: "DeepSeek Search" }]}
-                  onChange={() => {}}
-                />
-              </FormField>
-              {input("searchEndpoint", "searchEndpoint", { type: "url" })}
               <FormField
-                label={t("searchKey")}
-                htmlFor="source-searchKey"
-                error={message("searchKey")}
+                label={t("model")}
+                htmlFor="source-model"
+                error={message("model")}
               >
-                <Input
-                  id="source-searchKey"
-                  disabled={busy}
-                  type="password"
-                  autoComplete="off"
-                  value={searchKey}
-                  placeholder={
-                    initial.hasSearchKey &&
-                    initial.searchEndpoint === source.searchEndpoint
-                      ? t("configured")
-                      : ""
-                  }
-                  onChange={(e) => setSearchKey(e.target.value)}
-                />
+                <div className="model-control">
+                  <Choice
+                    id="source-model"
+                    value={draft.model}
+                    label={t("model")}
+                    disabled={busy || !usable}
+                    options={models.map((m) => ({
+                      value: m.id,
+                      label: m.name,
+                    }))}
+                    onChange={(model) => {
+                      const limit = models.find(
+                        (m) => m.id === model,
+                      )?.outputLimit;
+                      setDraft((s) => ({
+                        ...s,
+                        model,
+                        maxOutputTokens: limit
+                          ? Math.min(limit, s.maxOutputTokens)
+                          : s.maxOutputTokens,
+                      }));
+                      setError(null);
+                    }}
+                  />
+                  <Button
+                    variant="secondary"
+                    disabled={busy || !usable}
+                    onClick={() => void run("models")}
+                  >
+                    <ArrowClockwiseIcon data-icon="inline-start" />
+                    {t("loadModels")}
+                  </Button>
+                </div>
               </FormField>
+              {official ? (
+                <Field orientation="horizontal">
+                  <Checkbox
+                    id="source-web-search"
+                    disabled={busy}
+                    checked={searching}
+                    onCheckedChange={(v) =>
+                      change("searchMode", v ? "native" : "none")
+                    }
+                  />
+                  <FieldLabel htmlFor="source-web-search">
+                    {t("webSearch")}
+                  </FieldLabel>
+                </Field>
+              ) : (
+                select("searchMode", "webSearch", [
+                  { value: "none", label: t("searchOff") },
+                  {
+                    value: "native",
+                    label: t("nativeSearch"),
+                    disabled: source.protocol !== "responses",
+                  },
+                  { value: "external", label: t("externalSearch") },
+                ])
+              )}
+              {connectedSource && searching ? (
+                <div className="oauth-search-row">
+                  <span className="muted" role="status">
+                    {t(
+                      account?.search?.settingsKey === searchSettingsKey(source)
+                        ? "oauthSearchVerified"
+                        : "oauthSearchUntested",
+                    )}
+                  </span>
+                  <Tip
+                    text={t(
+                      oauth ? "oauthTestSearchHelp" : "accountTestSearchHelp",
+                    )}
+                  >
+                    <Button
+                      variant="secondary"
+                      disabled={busy || !source.model || !usable}
+                      onClick={() => void run("search")}
+                    >
+                      {t("oauthTestSearch")}
+                    </Button>
+                  </Tip>
+                </div>
+              ) : null}
+              {external ? (
+                <>
+                  <FormField label={t("searchService")}>
+                    <Choice
+                      label={t("searchService")}
+                      value="deepseek"
+                      options={[
+                        { value: "deepseek", label: "DeepSeek Search" },
+                      ]}
+                      onChange={() => {}}
+                    />
+                  </FormField>
+                  {input("searchEndpoint", "searchEndpoint", { type: "url" })}
+                  <FormField
+                    label={t("searchKey")}
+                    htmlFor="source-searchKey"
+                    error={message("searchKey")}
+                  >
+                    <Input
+                      id="source-searchKey"
+                      disabled={busy}
+                      type="password"
+                      autoComplete="off"
+                      value={searchKey}
+                      placeholder={
+                        initial.hasSearchKey &&
+                        initial.searchEndpoint === source.searchEndpoint
+                          ? t("configured")
+                          : ""
+                      }
+                      onChange={(e) => setSearchKey(e.target.value)}
+                    />
+                  </FormField>
+                </>
+              ) : null}
+              <Accordion
+                type="single"
+                collapsible
+                value={advanced}
+                onValueChange={setAdvanced}
+              >
+                <AccordionItem value="advanced">
+                  <AccordionTrigger>{t("advanced")}</AccordionTrigger>
+                  <AccordionContent>
+                    <FieldGroup>
+                      {searching && standalone
+                        ? number("resultCount", "resultCount", 1, 50)
+                        : null}
+                      {searching &&
+                      (standalone ||
+                        source.provider === "anthropic" ||
+                        source.provider === "gemini" ||
+                        google ||
+                        claude)
+                        ? check("readPages", "readPages")
+                        : null}
+                      <div className="source-options-grid">
+                        {number("timeoutSeconds", "timeoutSeconds", 5, 600)}
+                        {!oauth && !claude
+                          ? number(
+                              "maxOutputTokens",
+                              "maxOutputTokens",
+                              128,
+                              Math.min(
+                                131072,
+                                models.find((m) => m.id === source.model)
+                                  ?.outputLimit || 131072,
+                              ),
+                            )
+                          : null}
+                      </div>
+                      {searching &&
+                      source.provider !== "gemini" &&
+                      !connectedSource
+                        ? number("maxSearches", "maxSearches", 1, 20)
+                        : null}
+                      {searching &&
+                      source.readPages &&
+                      (standalone || source.provider === "anthropic")
+                        ? number("maxPages", "maxPages", 1, 20)
+                        : null}
+                      {searching &&
+                      (source.provider === "openai" ||
+                        oauth ||
+                        (!official && source.searchMode === "native"))
+                        ? check("liveAccess", "liveAccess")
+                        : null}
+                      {searching &&
+                      (source.provider === "openai" ||
+                        oauth ||
+                        source.provider === "anthropic") ? (
+                        <>
+                          {select("domainMode", "domainMode", [
+                            { value: "all", label: t("allDomains") },
+                            { value: "allow", label: t("allowDomains") },
+                            ...(source.provider === "anthropic"
+                              ? [{ value: "block", label: t("blockDomains") }]
+                              : []),
+                          ])}
+                          {source.domainMode !== "all" ? (
+                            <FormField
+                              label={t("domains")}
+                              error={message("domains")}
+                            >
+                              <TagEditor
+                                tags={source.domains}
+                                onChange={(v) => change("domains", v)}
+                              />
+                            </FormField>
+                          ) : null}
+                          {input("country", "country", {
+                            maxLength: 2,
+                            placeholder: "CN",
+                          })}
+                        </>
+                      ) : null}
+                    </FieldGroup>
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
             </>
           ) : null}
-          <Accordion
-            type="single"
-            collapsible
-            value={advanced}
-            onValueChange={setAdvanced}
-          >
-            <AccordionItem value="advanced">
-              <AccordionTrigger>{t("advanced")}</AccordionTrigger>
-              <AccordionContent>
-                <FieldGroup>
-                  {searching && standalone
-                    ? number("resultCount", "resultCount", 1, 50)
-                    : null}
-                  {searching &&
-                  (standalone ||
-                    source.provider === "anthropic" ||
-                    source.provider === "gemini")
-                    ? check("readPages", "readPages")
-                    : null}
-                  <div className="source-options-grid">
-                    {number("timeoutSeconds", "timeoutSeconds", 5, 600)}
-                    {number(
-                      "maxOutputTokens",
-                      "maxOutputTokens",
-                      128,
-                      Math.min(
-                        131072,
-                        models.find((m) => m.id === source.model)
-                          ?.outputLimit || 131072,
-                      ),
-                    )}
-                  </div>
-                  {searching && source.provider !== "gemini"
-                    ? number("maxSearches", "maxSearches", 1, 20)
-                    : null}
-                  {searching &&
-                  source.readPages &&
-                  (standalone || source.provider === "anthropic")
-                    ? number("maxPages", "maxPages", 1, 20)
-                    : null}
-                  {searching &&
-                  (source.provider === "openai" ||
-                    (!official && source.searchMode === "native"))
-                    ? check("liveAccess", "liveAccess")
-                    : null}
-                  {searching &&
-                  (source.provider === "openai" ||
-                    source.provider === "anthropic") ? (
-                    <>
-                      {select("domainMode", "domainMode", [
-                        { value: "all", label: t("allDomains") },
-                        { value: "allow", label: t("allowDomains") },
-                        ...(source.provider === "anthropic"
-                          ? [{ value: "block", label: t("blockDomains") }]
-                          : []),
-                      ])}
-                      {source.domainMode !== "all" ? (
-                        <FormField
-                          label={t("domains")}
-                          error={message("domains")}
-                        >
-                          <TagEditor
-                            tags={source.domains}
-                            onChange={(v) => change("domains", v)}
-                          />
-                        </FormField>
-                      ) : null}
-                      {input("country", "country", {
-                        maxLength: 2,
-                        placeholder: "CN",
-                      })}
-                    </>
-                  ) : null}
-                  {source.provider === "openai" ? (
-                    <>
-                      {input("project", "projectId")}
-                      {input("organization", "organizationId")}
-                    </>
-                  ) : null}
-                </FieldGroup>
-              </AccordionContent>
-            </AccordionItem>
-          </Accordion>
         </FieldGroup>
       </Fade>
     </Modal>

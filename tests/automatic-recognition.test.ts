@@ -228,7 +228,7 @@ test("in-flight manual edits, clearing fields, progress, ordering and removals w
     store.close();
   }
 });
-test("ambiguous and failed jobs are visible, do not loop, and can be retried explicitly", async () => {
+test("unmatched and failed jobs are distinct and visible, do not loop, and can be retried explicitly", async () => {
   const store = setup(),
     settings = defaultSettings("en");
   let calls = 0,
@@ -251,7 +251,7 @@ test("ambiguous and failed jobs are visible, do not loop, and can be retried exp
   try {
     queue.start();
     await until(
-      () => store.snapshot().works[0].recognition?.status === "needs-choice",
+      () => store.snapshot().works[0].recognition?.status === "no-match",
     );
     queue.schedule();
     await new Promise((r) => setTimeout(r, 20));
@@ -324,7 +324,7 @@ test("interrupted jobs return to queued, resume, and removed works cannot be res
   await queue.close();
   store.close();
 });
-test("artwork cache only accepts provider CDNs, bounded raster bytes, no auth/redirects, and survives restart", async () => {
+test("artwork cache accepts safe HTTPS, bounded raster bytes, no authentication, and survives restart", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "tamki-artwork-"));
   const bytes = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXWsAAAAASUVORK5CYII=",
@@ -375,5 +375,89 @@ test("artwork cache only accepts provider CDNs, bounded raster bytes, no auth/re
     await assert.rejects(large.cache(url + "large", signal));
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("smart organization can pause background recognition, hold it suspended and resume the queued work", async () => {
+  const store = setup();
+  let reject!: (e: Error) => void,
+    calls = 0;
+  const queue = new AutomaticRecognition(
+    store,
+    { snapshot: () => defaultSettings("en") },
+    {
+      run: async (request) => {
+        calls++;
+        if (calls > 1) return response(request);
+        return new Promise((_resolve, no) => {
+          reject = no;
+        });
+      },
+      cancel: () => reject(new Error("recognitionCancelled")),
+    },
+    () => {},
+    0,
+  );
+  try {
+    queue.start();
+    await queue.pause();
+    assert.equal(store.snapshot().works[0].recognition?.status, "queued");
+    queue.schedule();
+    assert.equal(calls, 1);
+    queue.resume();
+    await until(
+      () => store.snapshot().works[0].recognition?.status === "complete",
+    );
+    assert.equal(calls, 2);
+  } finally {
+    await queue.close();
+    store.close();
+  }
+});
+
+test("artwork repair fills only the missing image and preserves current metadata", () => {
+  const store = setup();
+  try {
+    const work = store.snapshot().works[0];
+    store.setRecognition(work.id, {
+      status: "complete",
+      sourceId: "bangumi",
+      signature: "fixture",
+      artworkError: true,
+    });
+    store.repairArtwork(work.id, "stale", "a".repeat(64));
+    assert.equal(store.snapshot().works[0].cover, undefined);
+    store.repairArtwork(work.id, "fixture", "b".repeat(64));
+    const repaired = store.snapshot().works[0];
+    assert.equal(repaired.cover, "b".repeat(64));
+    assert.equal(repaired.recognition?.artworkError, false);
+    assert.equal(repaired.title, work.title);
+    store.repairArtwork(work.id, "fixture", "c".repeat(64));
+    assert.equal(store.snapshot().works[0].cover, "b".repeat(64));
+  } finally {
+    store.close();
+  }
+});
+test("downloaded representations of one source episode become selectable versions", () => {
+  const store = setup();
+  try {
+    scan(store, 2);
+    store.linkDownloadedVersions("local", [
+      {
+        path: "/media/Example/1.mp4",
+        label: "1080P",
+        releaseKey: "bilibili:80",
+      },
+      { path: "/media/Example/2.mp4", label: "4K", releaseKey: "bilibili:120" },
+    ]);
+    const work = store.snapshot().works[0];
+    assert.equal(work.episodes.length, 1);
+    assert.equal(work.episodes[0].versions?.length, 2);
+    assert.deepEqual(
+      work.episodes[0].versions?.map((version) => version.label).sort(),
+      ["1080P", "4K"],
+    );
+  } finally {
+    store.close();
   }
 });

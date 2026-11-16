@@ -1,3 +1,4 @@
+import { traced, logEvent } from "../diagnostics";
 import { z } from "zod";
 import { providers, type SourceConfig } from "../shared/settings";
 import {
@@ -11,6 +12,7 @@ import {
 } from "../shared/recognition";
 import { metadataJSON } from "./metadata-http";
 import { ProviderError } from "./provider";
+import { openAIStream, usedWebSearch } from "./openai-stream";
 const publicLink = (value: unknown): value is string => {
   if (typeof value !== "string" || value.length > 8192) return false;
   try {
@@ -41,16 +43,46 @@ export function parseAIResult(text: string, input: RecognitionInput) {
     );
   }
 }
-export async function aiRecognition(
+export interface StructuredTask {
+  system: string;
+  prompt: string;
+  schema: Record<string, unknown>;
+  name: string;
+  queries: string[];
+  /** Metadata lookup may require search; directory grouping only needs it when ambiguous. */
+  searchPolicy?: "optional";
+  /** ChatGPT Responses effort; other adapters retain their provider defaults. */
+  reasoningEffort?: "medium";
+  /** Intermediate semantic planning; final results still require the schema. */
+  responseFormat?: "text";
+}
+export interface StructuredResponse {
+  text: string;
+  citations: Citation[];
+}
+export async function aiStructured(
   source: SourceConfig,
   key: string,
   searchKey: string,
-  input: RecognitionInput,
-  template: string,
+  task: StructuredTask,
   signal: AbortSignal,
   request: typeof fetch = fetch,
-): Promise<RecognitionResponse> {
-  const system = recognitionSystem(input);
+): Promise<StructuredResponse> {
+  return traced(
+    "ai.structured",
+    { provider: source.provider, model: source.model, operation: task.name },
+    () => executeStructured(source, key, searchKey, task, signal, request),
+  );
+}
+async function executeStructured(
+  source: SourceConfig,
+  key: string,
+  searchKey: string,
+  task: StructuredTask,
+  signal: AbortSignal,
+  request: typeof fetch,
+): Promise<StructuredResponse> {
+  const system = task.system;
   const provider = providers.find((p) => p.id === source.provider)!;
   const auth =
     source.provider === "openai-compatible" ? source.auth : provider.auth;
@@ -73,7 +105,7 @@ export async function aiRecognition(
         title: typeof title === "string" ? title.slice(0, 500) : url,
       });
   };
-  let prompt = recognitionPrompt(input, template);
+  let prompt = task.prompt;
   // DeepSeek Search is an explicit protocol, also available independently for compatible models.
   if (
     source.searchMode === "external" ||
@@ -92,10 +124,7 @@ export async function aiRecognition(
       summary: string;
       content?: string;
     }[] = [];
-    const queries = [
-      input.title,
-      ...input.files.map((f) => `${input.title} ${f.filename}`),
-    ].slice(0, source.maxSearches);
+    const queries = task.queries.slice(0, source.maxSearches);
     for (const query of queries) {
       const data = z
         .object({
@@ -161,7 +190,7 @@ export async function aiRecognition(
   const native =
     source.searchMode === "native" && source.provider !== "deepseek";
   let suffix: string, body: Record<string, unknown>;
-  const schema = z.toJSONSchema(recognitionOutputSchema);
+  const schema = { ...task.schema };
   delete schema.$schema;
   if (source.protocol === "responses") {
     suffix = "/responses";
@@ -174,7 +203,7 @@ export async function aiRecognition(
       text: {
         format: {
           type: "json_schema",
-          name: "tamki_metadata",
+          name: task.name,
           strict: true,
           schema,
         },
@@ -283,22 +312,63 @@ export async function aiRecognition(
     source.provider === "openai-compatible"
       ? source.endpoint
       : provider.endpoint;
-  const data = await metadataJSON(
-    base.replace(/\/$/, "") + suffix,
-    { method: "POST", headers, signal, body: JSON.stringify(body) },
-    request,
-  );
+  const subscription = source.provider === "openai-oauth";
+  if (task.responseFormat === "text") {
+    delete body.text;
+    delete body.response_format;
+    if (source.protocol === "gemini-generate-content") {
+      const config = body.generationConfig as Record<string, unknown>;
+      delete config.responseMimeType;
+      delete config.responseJsonSchema;
+    }
+  }
+  if (subscription) {
+    body.input = [{ role: "user", content: prompt }];
+    if (task.reasoningEffort) body.reasoning = { effort: task.reasoningEffort };
+    delete body.max_output_tokens;
+    delete body.max_tool_calls;
+    if (native)
+      body.tool_choice =
+        task.searchPolicy === "optional" ? "auto" : { type: "web_search" };
+  }
+  const data = subscription
+    ? await openAIStream(body, signal, request)
+    : await metadataJSON(
+        base.replace(/\/$/, "") + suffix,
+        { method: "POST", headers, signal, body: JSON.stringify(body) },
+        request,
+      );
+  if (
+    subscription &&
+    native &&
+    task.searchPolicy !== "optional" &&
+    !usedWebSearch(data)
+  )
+    throw new ProviderError("oauthSearchUnverified");
   let output = "";
   if (source.protocol === "responses") {
     if (data.status !== "completed")
       throw new ProviderError(
-        data.status === "incomplete"
+        data.status === "incomplete" &&
+          data.incomplete_details?.reason === "max_output_tokens"
           ? "recognitionTruncated"
           : "recognitionFailed",
       );
+    const hasFinalAnswer = (data.output || []).some(
+      (item: any) => item.type === "message" && item.phase === "final_answer",
+    );
     for (const item of data.output || []) {
+      const useText =
+        item.phase !== "commentary" &&
+        (!hasFinalAnswer || item.phase === "final_answer");
+      if (
+        useText &&
+        item.type === "message" &&
+        ["in_progress", "incomplete"].includes(item.status)
+      )
+        throw new ProviderError("recognitionInvalid");
       for (const content of item.content || []) {
-        if (content.type === "output_text") output += content.text;
+        if (useText && content.type === "output_text") output += content.text;
         for (const annotation of content.annotations || [])
           cite(annotation.url, annotation.title);
       }
@@ -329,6 +399,14 @@ export async function aiRecognition(
       if (typeof part.text === "string" && !part.thought) output += part.text;
     for (const chunk of candidate.groundingMetadata?.groundingChunks || [])
       cite(chunk.web?.uri, chunk.web?.title);
+    if (
+      source.provider === "gemini-oauth" &&
+      native &&
+      task.searchPolicy !== "optional" &&
+      (!candidate.groundingMetadata?.webSearchQueries?.length ||
+        !citations.length)
+    )
+      throw new ProviderError("oauthSearchUnverified");
   } else {
     if (data.choices?.[0]?.finish_reason === "length")
       throw new ProviderError("recognitionTruncated");
@@ -336,12 +414,51 @@ export async function aiRecognition(
       throw new ProviderError("recognitionFailed");
     output = data.choices[0].message?.content;
   }
-  if (typeof output !== "string" || !output)
-    throw new ProviderError("recognitionInvalid");
+  if (typeof output !== "string" || !output) {
+    logEvent(
+      "ai.output.empty",
+      { provider: source.provider, model: source.model },
+      "error",
+    );
+    throw new ProviderError("recognitionEmpty");
+  }
+  logEvent("ai.output", { textLength: output.length });
+  return {
+    text: output,
+    citations: citations.slice(0, 100),
+  };
+}
+
+export async function aiRecognition(
+  source: SourceConfig,
+  key: string,
+  searchKey: string,
+  input: RecognitionInput,
+  template: string,
+  signal: AbortSignal,
+  request: typeof fetch = fetch,
+): Promise<RecognitionResponse> {
+  const response = await aiStructured(
+    source,
+    key,
+    searchKey,
+    {
+      system: recognitionSystem(input),
+      prompt: recognitionPrompt(input, template),
+      schema: z.toJSONSchema(recognitionOutputSchema),
+      name: "tamki_metadata",
+      queries: [
+        input.title,
+        ...input.files.map((f) => `${input.title} ${f.filename}`),
+      ],
+    },
+    signal,
+    request,
+  );
   return {
     kind: "result",
-    result: parseAIResult(output, input),
-    citations: citations.slice(0, 100),
+    result: parseAIResult(response.text, input),
+    citations: response.citations,
   };
 }
 
@@ -354,6 +471,7 @@ export async function aiRecognitionBatches(
   template: string,
   signal: AbortSignal,
   request: typeof fetch = fetch,
+  execute?: (input: RecognitionInput) => Promise<RecognitionResponse>,
 ): Promise<RecognitionResponse> {
   const size = Math.max(
     1,
@@ -381,15 +499,34 @@ export async function aiRecognitionBatches(
   const run = async (files: RecognitionInput["files"]): Promise<void> => {
     signal.throwIfAborted();
     try {
-      const response = await aiRecognition(
-        source,
-        key,
-        searchKey,
-        { ...input, files },
-        template,
-        signal,
-        request,
-      );
+      const batchInput: RecognitionInput = {
+        ...input,
+        files,
+        ...(input.feedback
+          ? {
+              feedback: {
+                ...input.feedback,
+                previous: {
+                  ...input.feedback.previous,
+                  files: input.feedback.previous.files.filter((f) =>
+                    files.some((file) => file.id === f.id),
+                  ),
+                },
+              },
+            }
+          : {}),
+      };
+      const response = execute
+        ? await execute(batchInput)
+        : await aiRecognition(
+            source,
+            key,
+            searchKey,
+            batchInput,
+            template,
+            signal,
+            request,
+          );
       if (response.kind !== "result")
         throw new ProviderError("recognitionInvalid");
       if (combined.result.work === null && input.scope === "work")

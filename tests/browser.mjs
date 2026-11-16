@@ -45,7 +45,7 @@ const server = createServer((req, res) => {
       id: 42,
       name: "Automatic series",
       summary: "Automatically identified work synopsis",
-      images: { large: "https://lain.bgm.tv/pic/cover/l/fixture.png" },
+      images: { large: "https://lain.bgm.tv/pic/cover/l/aa/bb/fixture.png" },
     };
     res.setHeader("Content-Type", "application/json");
     if (req.url.includes("/search/")) {
@@ -171,6 +171,7 @@ const server = createServer((req, res) => {
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
 const base = `http://127.0.0.1:${server.address().port}`;
 let app, shell;
+let thumbnailEvidence;
 const errors = [];
 async function launch() {
   app = await electron.launch({
@@ -236,16 +237,18 @@ try {
   await remote.waitForURL(base + "/one");
   await shell.locator("#forward").click();
   await remote.waitForURL(base + "/two");
-  const geometry = await app.evaluate(({ BaseWindow }) => {
+  const geometry = await app.evaluate(({ BaseWindow }, base) => {
     const w = BaseWindow.getAllWindows()[0];
     return {
       width: w.getContentBounds().width,
-      views: w.contentView.children.map((v) => v.getBounds()),
+      remote: w.contentView.children
+        .find((v) => v.webContents?.getURL().startsWith(base))
+        .getBounds(),
     };
-  });
-  assert.equal(geometry.views.at(-1).x, 8);
-  assert.equal(geometry.views.at(-1).width, geometry.width - 16);
-  assert.equal(geometry.views.at(-1).y, 82);
+  }, base);
+  assert.equal(geometry.remote.x, 8);
+  assert.equal(geometry.remote.width, geometry.width - 16);
+  assert.equal(geometry.remote.y, 82);
   // The tab menu is a trusted native view above the remote page, not a DOM
   // popover hidden under Chromium. Its preload exposes no library capability.
   await shell.getByRole("button", { name: "Search tabs", exact: true }).click();
@@ -383,12 +386,36 @@ try {
   assert(!snapshot.works.some((w) => w.title.includes("Hidden")));
   await checkSettings(app, shell, base, profile);
   await shell.getByRole("button", { name: "Back", exact: true }).click();
-  await shell.locator(".poster img").first().waitFor();
-  await shell.screenshot({ path: "test-results/library.png" });
+  assert.equal(
+    await shell.locator(".cover-button .poster img").count(),
+    0,
+    "Missing work artwork must not use episode frames",
+  );
   await shell
     .getByRole("button", { name: "Series", exact: true })
     .first()
     .click();
+  await shell.locator(".episode-list .poster img").first().waitFor();
+  assert.equal(
+    await shell.locator(".detail-hero > .poster img").count(),
+    0,
+    "Work hero must remain an artwork placeholder even after episode thumbnails load",
+  );
+  for (let attempt = 0; attempt < 100 && !thumbnailEvidence; attempt++) {
+    thumbnailEvidence = await shell.evaluate(async () => {
+      const state = await window.tamki.library("state");
+      for (const work of state.works)
+        for (const episode of work.episodes) {
+          const image = await window.tamki.library("thumbnail", {
+            id: episode.id,
+          });
+          if (image.url) return { id: episode.id, key: image.key };
+        }
+    });
+    if (!thumbnailEvidence) await shell.waitForTimeout(100);
+  }
+  assert(thumbnailEvidence, "A generated video frame must be persisted");
+  await shell.screenshot({ path: "test-results/library.png" });
   await shell
     .getByRole("button", { name: "Organize information", exact: true })
     .click();
@@ -570,6 +597,15 @@ try {
   );
   await app.close();
   await launch();
+  const restoredThumbnail = await shell.evaluate(
+    (input) => window.tamki.library("thumbnail", { id: input.id }),
+    thumbnailEvidence,
+  );
+  assert.equal(restoredThumbnail.key, thumbnailEvidence.key);
+  assert(
+    restoredThumbnail.url?.startsWith("tamki-media://thumbnail/"),
+    "Restart must reuse the disk thumbnail",
+  );
   snapshot = await state();
   assert.equal(
     snapshot.works.find((w) => w.title === "Automatic series").cover,
@@ -608,7 +644,7 @@ try {
   await shell.getByRole("button", { name: "New tab", exact: true }).click();
   await shell.locator("#address").fill(base + "/one");
   await shell.locator("#address").press("Enter");
-  remote = await waitForPage((p) => p !== shell && p.url().startsWith(base));
+  remote = await waitForPage((p) => p !== shell && p.url() === base + "/one");
   await remote.waitForURL(base + "/one");
   assert.match(
     await remote.evaluate(() => document.cookie),

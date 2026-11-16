@@ -83,23 +83,38 @@ export async function checkSettings(app, shell, base, profile) {
   await shell.screenshot({ path: "test-results/prompt-settings.png" });
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   await dialog.waitFor({ state: "hidden" });
+  await shell
+    .getByRole("button", { name: "Add AI connection", exact: true })
+    .click();
+  await dialog
+    .getByRole("combobox", { name: "Service type", exact: true })
+    .click();
+  await shell
+    .getByRole("option", { name: "OpenAI Compatible", exact: true })
+    .click();
+  await dialog.getByLabel("Name", { exact: true }).fill("Fixture connection");
+  await dialog.getByLabel("Service URL", { exact: true }).fill(base + "/v1");
+  await dialog
+    .getByLabel("API Key", { exact: true })
+    .fill("tamki-model-secret-fixture");
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await dialog.waitFor({ state: "hidden" });
+  await shell
+    .getByRole("button", { name: "Source settings", exact: true })
+    .click();
   await shell.getByRole("button", { name: "Add source", exact: true }).click();
   dialog = shell.getByRole("dialog");
   await dialog.evaluate(async (el) => {
     await Promise.all(el.getAnimations().map((a) => a.finished));
   });
   const initialBounds = await dialog.boundingBox();
+  await dialog.getByLabel("Name", { exact: true }).fill("Fixture source");
   await dialog
-    .getByRole("combobox", { name: "Source type", exact: true })
+    .getByRole("combobox", { name: "AI connection", exact: true })
     .click();
   await shell
-    .getByRole("option", { name: "OpenAI Compatible", exact: true })
+    .getByRole("option", { name: "Fixture connection", exact: true })
     .click();
-  await dialog.getByLabel("Name", { exact: true }).fill("Fixture source");
-  await dialog.getByLabel("Service URL", { exact: true }).fill(base + "/v1");
-  await dialog
-    .getByLabel("API Key", { exact: true })
-    .fill("tamki-model-secret-fixture");
   await dialog
     .getByRole("button", { name: "Load models", exact: true })
     .click();
@@ -127,6 +142,10 @@ export async function checkSettings(app, shell, base, profile) {
   await shell.screenshot({ path: "test-results/source-settings.png" });
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   await dialog.waitFor({ state: "hidden" });
+  await shell
+    .getByRole("region", { name: "Source settings", exact: true })
+    .getByRole("button", { name: "Back", exact: true })
+    .click();
   const settings = await shell.evaluate(
     async () => (await window.tamki.library("state")).settings,
   );
@@ -144,34 +163,29 @@ export async function checkSettings(app, shell, base, profile) {
   await shell
     .getByRole("option", { name: "Fixture source", exact: true })
     .click();
+  await shell
+    .getByRole("button", { name: "Source settings", exact: true })
+    .click();
   await shell.getByRole("button", { name: "Edit source", exact: true }).click();
-  assert.equal(
-    await dialog.getByLabel("API Key", { exact: true }).inputValue(),
-    "",
-  );
+  assert.equal(await dialog.getByLabel("API Key", { exact: true }).count(), 0);
   assert.equal(
     await dialog
-      .getByLabel("API Key", { exact: true })
-      .getAttribute("placeholder"),
-    "Configured",
+      .getByRole("combobox", { name: "AI connection", exact: true })
+      .innerText(),
+    "Fixture connection",
   );
-  // A changed endpoint cannot inherit the old credential, even through direct IPC.
-  const leaked = await shell.evaluate(
-    async (s) => {
-      try {
-        await window.tamki.library("source-models", {
-          source: { ...s, endpoint: s.endpoint + "/other" },
-        });
-        return true;
-      } catch (e) {
-        return e.message;
-      }
-    },
-    (({ hasKey, hasSearchKey, models, ...s }) => s)(
-      settings.recognition.sources[0],
-    ),
-  );
-  assert.equal(leaked, "keyRequired");
+  // Feature IPC cannot inject another transport endpoint.
+  const rejected = await shell.evaluate(async () => {
+    try {
+      await window.tamki.library("recognition-source-models", {
+        source: { endpoint: "https://other.test" },
+      });
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  assert(rejected);
   await dialog
     .getByRole("button", { name: "Load models", exact: true })
     .click();
@@ -181,6 +195,10 @@ export async function checkSettings(app, shell, base, profile) {
     .click();
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   await dialog.waitFor({ state: "hidden" });
+  await shell
+    .getByRole("region", { name: "Source settings", exact: true })
+    .getByRole("button", { name: "Back", exact: true })
+    .click();
   await shell
     .getByRole("combobox", { name: "Filename parser", exact: true })
     .scrollIntoViewIfNeeded();

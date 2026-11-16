@@ -8,6 +8,13 @@ import {
   type DownloadItem,
 } from "electron";
 import path from "node:path";
+import {
+  RuntimeLog,
+  setRuntimeLog,
+  logEvent,
+  diagnosticError,
+  traced,
+} from "./diagnostics";
 import { pathToFileURL } from "node:url";
 import { mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -16,11 +23,52 @@ import { isWebURL, resolveAddress } from "./navigation";
 import { LibraryService } from "./library/service";
 import type { BrowserState, Transfer } from "./shared/model";
 import { id } from "./shared/validation";
+import { Bilibili, biliPage } from "./capture/bilibili";
+import { capturePageContextScript } from "./capture/page-context";
+import { MediaCapture } from "./capture/providers";
+import { CapturePlayback } from "./capture/playback";
+import { VideoDownloads, muxMedia } from "./capture/downloads";
+import { CaptureOverlay } from "./capture/overlay";
+import { downloadActionSchema } from "./shared/capture";
 
 if (process.env.TAMKI_TEST_PROFILE)
   app.setPath("userData", process.env.TAMKI_TEST_PROFILE);
 app.setName("Tamki");
+setRuntimeLog(new RuntimeLog(path.join(app.getPath("userData"), "logs")));
+logEvent("app.start", { version: app.getVersion() });
+process.on("uncaughtExceptionMonitor", (error) =>
+  logEvent("app.uncaught", diagnosticError(error), "error"),
+);
+app.on("render-process-gone", (_event, _contents, details) =>
+  logEvent(
+    "app.renderer-gone",
+    { reason: details.reason, exitCode: details.exitCode },
+    "error",
+  ),
+);
+app.on("child-process-gone", (_event, details) =>
+  logEvent(
+    "app.child-gone",
+    {
+      reason: details.reason,
+      exitCode: details.exitCode,
+      processType: details.type,
+    },
+    "error",
+  ),
+);
+app.on("will-quit", () => logEvent("app.quit"));
 protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "tamki-stream",
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+      corsEnabled: true,
+    },
+  },
   {
     scheme: "tamki-media",
     privileges: {
@@ -33,28 +81,44 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 let window: BaseWindow, shell: WebContentsView, library: LibraryService;
+let capture: CaptureOverlay | undefined,
+  videoDownloads: VideoDownloads | undefined;
+let onlinePlayback: CapturePlayback;
 let tabPicker: WebContentsView | undefined;
 let pickerOpen = false;
+let pickerMode: "tabs" | "history" | "tasks" = "tabs";
+let restoredSession = false;
 let pickerReady: Promise<void> | undefined;
 let active = 0,
   nextId = 1,
   closing = false;
 type Tab =
-  | { kind: "web"; view: WebContentsView; error: string }
-  | { kind: "player"; workId: string };
+  | {
+      kind: "web";
+      view: WebContentsView;
+      error: string;
+    }
+  | {
+      kind: "player";
+      workId: string;
+      onlineWork?: import("./shared/model").OnlineWork;
+    };
 const tabs = new Map<number, Tab>();
 const downloads = new Map<string, DownloadItem>();
 function snapshot(): BrowserState {
   return {
     active,
     pickerOpen,
+    pickerMode,
     tabs: [...tabs].map(([id, tab]) => {
       if (tab.kind === "player")
         return {
           id,
           kind: "player",
           workId: tab.workId,
+          onlineWork: tab.onlineWork,
           title:
+            tab.onlineWork?.title ||
             library.snapshot().works.find((w) => w.id === tab.workId)?.title ||
             "",
           url: "",
@@ -77,13 +141,43 @@ function snapshot(): BrowserState {
     }),
   };
 }
+function persistSession() {
+  if (!restoredSession || closing || !library) return;
+  const entries = [...tabs.entries()].filter(([, tab]) => tab.kind === "web");
+  library.store.setConfig(
+    "browserSession",
+    JSON.stringify({
+      urls: entries.map(([, tab]) =>
+        tab.kind === "web"
+          ? tab.view.webContents.getURL() || "about:blank"
+          : "about:blank",
+      ),
+      active: entries.findIndex(([id]) => id === active),
+    }),
+  );
+}
+function browserHistory(): import("./shared/model").BrowserVisit[] {
+  try {
+    return JSON.parse(library.store.config("browserHistory") || "[]");
+  } catch {
+    return [];
+  }
+}
 function emit() {
+  persistSession();
   if (!closing && shell && !shell.webContents.isDestroyed())
     shell.webContents.send("browser:state", snapshot());
   emitPicker();
 }
 function pickerState() {
-  return { browser: snapshot(), preferences: library.store.preferences() };
+  return {
+    browser: snapshot(),
+    preferences: library.store.preferences(),
+    mode: pickerMode,
+    history: pickerMode === "history" ? browserHistory() : [],
+    jobs: pickerMode === "tasks" ? library.store.downloadJobs() : [],
+    transfers: pickerMode === "tasks" ? library.snapshot().transfers : [],
+  };
 }
 function emitPicker() {
   if (!closing && tabPicker && !tabPicker.webContents.isDestroyed())
@@ -99,11 +193,13 @@ function dismissPicker(restoreFocus = false) {
     shell.webContents.send("browser:focus-tabs");
   }
 }
-async function openPicker() {
-  if (pickerOpen) {
+async function openPicker(mode: "tabs" | "history" | "tasks" = "tabs") {
+  capture?.dismiss();
+  if (pickerOpen && pickerMode === mode) {
     dismissPicker(true);
     return;
   }
+  pickerMode = mode;
   pickerOpen = true;
   if (!tabPicker) {
     tabPicker = new WebContentsView({
@@ -149,6 +245,7 @@ function emitLibrary() {
   if (!closing && library && shell && !shell.webContents.isDestroyed())
     shell.webContents.send("library:state", library.snapshot());
   emitPicker();
+  capture?.emit();
 }
 function layout() {
   if (!window || closing) return;
@@ -169,19 +266,42 @@ function layout() {
     });
   }
   tabPicker?.setBounds({
-    x: Math.max(8, width - 368),
+    x: Math.max(8, width - (pickerMode === "tasks" ? 448 : 368)),
     y: 40,
-    width: Math.min(360, width - 16),
-    height: Math.min(390, height - 56, 104 + tabs.size * 56),
+    width: Math.min(pickerMode === "tasks" ? 440 : 360, width - 16),
+    height: Math.min(
+      height - 56,
+      pickerMode === "tabs" ? Math.min(390, 104 + tabs.size * 56) : 520,
+    ),
   });
+  const tab = currentWeb();
+  capture?.sync(tab ? active : 0, tab?.view.webContents.getURL() || "");
+  if (tabPicker && pickerOpen) window.contentView.addChildView(tabPicker);
 }
 function select(id: number) {
   if (id !== 0 && !tabs.has(id)) return;
   dismissPicker();
+  capture?.dismiss();
   active = id;
   layout();
   shell.webContents.focus();
   emit();
+}
+async function capturePageContext(
+  tabId: number,
+  pageURL: string,
+): Promise<unknown> {
+  const tab = tabs.get(tabId);
+  const page = biliPage(pageURL);
+  if (
+    tab?.kind !== "web" ||
+    tab.view.webContents.isDestroyed() ||
+    tab.view.webContents.getURL() !== pageURL ||
+    page?.kind !== "season" ||
+    !!page.episodeId
+  )
+    return {};
+  return tab.view.webContents.executeJavaScript(capturePageContextScript);
 }
 function createTab(url = "about:blank") {
   if (url !== "about:blank" && !isWebURL(url)) return;
@@ -195,14 +315,22 @@ function createTab(url = "about:blank") {
       webSecurity: true,
     },
   });
+  // Remote pages are native views above the shell; shell CSS cannot clip them.
+  view.setBorderRadius(8);
   const tab: Extract<Tab, { kind: "web" }> = { kind: "web", view, error: "" };
   tabs.set(id, tab);
   window.contentView.addChildView(view);
   if (tabPicker) window.contentView.addChildView(tabPicker);
   const wc = view.webContents;
-  wc.on("focus", () => dismissPicker());
+  wc.on("focus", () => {
+    dismissPicker();
+    capture?.dismiss();
+  });
   wc.on("before-mouse-event", (_event, input) => {
-    if (input.type === "mouseDown") dismissPicker();
+    if (input.type === "mouseDown") {
+      dismissPicker();
+      capture?.dismiss();
+    }
   });
   wc.setWindowOpenHandler(({ url: target }) => {
     if (isWebURL(target)) createTab(target);
@@ -223,10 +351,34 @@ function createTab(url = "about:blank") {
     emit();
   };
   wc.on("page-title-updated", updated);
-  wc.on("did-navigate", updated);
+  const recordVisit = () => {
+    const url = wc.getURL();
+    if (!isWebURL(url)) return;
+    const previous = browserHistory().filter((entry) => entry.url !== url);
+    previous.unshift({ url, title: wc.getTitle() || url, time: Date.now() });
+    library.store.setConfig(
+      "browserHistory",
+      JSON.stringify(previous.slice(0, 1000)),
+    );
+  };
+  wc.on("did-navigate", () => {
+    recordVisit();
+    updated();
+  });
+  wc.on("did-stop-loading", recordVisit);
   wc.on("did-navigate-in-page", updated);
   wc.on("did-start-loading", updated);
   wc.on("did-stop-loading", updated);
+  const refreshCaptureContext = () => {
+    if (active !== id) return;
+    const url = wc.getURL();
+    void capturePageContext(id, url)
+      .then((context) => capture?.updateCurrent(id, url, context))
+      .catch(() => {});
+  };
+  wc.on("dom-ready", refreshCaptureContext);
+  wc.on("did-stop-loading", refreshCaptureContext);
+  wc.on("did-navigate-in-page", refreshCaptureContext);
   wc.on("did-fail-load", (_event, code, _description, _url, mainFrame) => {
     if (mainFrame && code !== -3 && tabs.has(id)) {
       tab.error = "pageFailed";
@@ -246,11 +398,14 @@ function createTab(url = "about:blank") {
   void wc.loadURL(url).catch(() => {});
   select(id);
 }
+
 function closeTab(id: number) {
   const tab = tabs.get(id);
   if (!tab) return;
   const ids = [...tabs.keys()],
     index = ids.indexOf(id);
+  if (tab?.kind === "player" && tab.onlineWork)
+    onlinePlayback.close(tab.workId);
   tabs.delete(id);
   if (tab.kind === "web") {
     window.contentView.removeChildView(tab.view);
@@ -267,7 +422,11 @@ function currentWeb() {
 function shortcut(key: string, modifier: boolean, shift: boolean) {
   if (!modifier) return false;
   const lower = key.toLowerCase();
-  if (lower === "l") {
+  if (lower === "d" && shift && currentWeb()) {
+    capture?.open(true);
+  } else if (lower === "h") {
+    void openPicker("history");
+  } else if (lower === "l") {
     if (!currentWeb()) createTab();
     shell.webContents.focus();
     shell.webContents.send("browser:focus-address");
@@ -287,6 +446,7 @@ function shortcut(key: string, modifier: boolean, shift: boolean) {
   } else return false;
   return true;
 }
+
 app
   .whenReady()
   .then(async () => {
@@ -342,6 +502,7 @@ app
     });
     window = new BaseWindow({
       title: "Tamki",
+      show: process.env.TAMKI_BACKGROUND_TEST !== "1",
       ...(process.platform === "darwin"
         ? {
             titleBarStyle: "hidden" as const,
@@ -360,9 +521,85 @@ app
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
+        disableHtmlFullscreenWindowResize:
+          process.env.TAMKI_BACKGROUND_TEST === "1",
       },
     });
     window.contentView.addChildView(shell);
+    const mediaCapture = new MediaCapture([
+      new Bilibili(profile.fetch.bind(profile) as typeof fetch),
+    ]);
+    onlinePlayback = new CapturePlayback(
+      (resource, signal) => mediaCapture.resolve(resource, signal),
+      profile.fetch.bind(profile) as typeof fetch,
+    );
+    protocol.handle("tamki-stream", (request) =>
+      onlinePlayback.handle(request),
+    );
+    videoDownloads = new VideoDownloads({
+      limits: () => library.settings.snapshot().downloadLimits,
+      store: library.store,
+      cache: path.join(app.getPath("userData"), "video-downloads"),
+      request: profile.fetch.bind(profile) as typeof fetch,
+      resolve: (resource, signal) => mediaCapture.resolve(resource, signal),
+      mux: (media, inputs, output, signal) =>
+        muxMedia(
+          path.join(
+            __dirname.replace(/app\.asar(?=[/\\])/, "app.asar.unpacked"),
+            "tools",
+            process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg",
+          ),
+          media,
+          inputs,
+          output,
+          signal,
+        ),
+      target: (target, name, series) =>
+        library.downloadStorage.target(target, name, series),
+      publish: (file, target, name, id, signal, progress) =>
+        library.downloadStorage.publish(
+          file,
+          target,
+          name,
+          id,
+          signal,
+          progress,
+        ),
+      completed: (job, item) => library.completeDownload(job, item),
+      emit: () => {
+        emitPicker();
+        if (!closing && !shell.webContents.isDestroyed())
+          shell.webContents.send(
+            "library:downloads",
+            library.store.downloadJobs(),
+          );
+      },
+    });
+    capture = new CaptureOverlay({
+      window,
+      base: __dirname,
+      media: mediaCapture,
+      pageContext: capturePageContext,
+      play: (result, selected, title) => {
+        // User-initiated handoff: stop the source page's media before opening our player.
+        void currentWeb()
+          ?.view.webContents.executeJavaScript(
+            "document.querySelectorAll('video,audio').forEach(media => media.pause())",
+          )
+          .catch(() => {});
+        const work = onlinePlayback.createContext(result, selected, title);
+        const tabId = nextId++;
+        tabs.set(tabId, { kind: "player", workId: work.id, onlineWork: work });
+        select(tabId);
+      },
+      downloads: videoDownloads,
+      library,
+      shortcut,
+      settings: () => {
+        select(0);
+        shell.webContents.send("browser:open-page", "settings");
+      },
+    });
     shell.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     shell.webContents.on("will-navigate", (event) => event.preventDefault());
     shell.webContents.on("will-attach-webview", (event) =>
@@ -372,7 +609,7 @@ app
       if (shortcut(input.key, input.meta || input.control, input.shift))
         event.preventDefault();
     });
-    ipcMain.handle("tabs:action", (event, payload: unknown) => {
+    ipcMain.handle("tabs:action", async (event, payload: unknown) => {
       if (
         !tabPicker ||
         event.sender !== tabPicker.webContents ||
@@ -399,8 +636,113 @@ app
               value: z.number().int().nonnegative(),
             })
             .strict(),
+          z
+            .object({
+              type: z.literal("open-history"),
+              value: z.string().url().max(8192),
+            })
+            .strict(),
+          z
+            .object({
+              type: z.literal("all-tasks"),
+              value: z.undefined().optional(),
+            })
+            .strict(),
+          z
+            .object({
+              type: z.literal("play-download"),
+              value: z
+                .object({
+                  jobId: z.string().uuid(),
+                  itemId: z.string().uuid(),
+                })
+                .strict(),
+            })
+            .strict(),
+          z
+            .object({
+              type: z.literal("download-action"),
+              value: downloadActionSchema,
+            })
+            .strict(),
+          z
+            .object({
+              type: z.literal("transfer-action"),
+              value: z
+                .object({ id, action: z.enum(["pause", "resume"]) })
+                .strict(),
+            })
+            .strict(),
+          z
+            .object({
+              type: z.literal("clear-history"),
+              value: z.undefined().optional(),
+            })
+            .strict(),
         ])
         .parse(payload);
+      if (action.type === "play-download") {
+        const job = library.store
+          .downloadJobs()
+          .find((job) => job.id === action.value.jobId);
+        const item = job?.items.find(
+          (item) =>
+            item.state === "completed" && item.id === action.value.itemId,
+        );
+        const work =
+          item &&
+          library
+            .snapshot()
+            .works.find((work) =>
+              work.episodes.some((episode) => episode.id === item.episodeId),
+            );
+        if (!work || !item?.episodeId) throw new Error("mediaMissing");
+        const version = work.episodes
+          .find((e) => e.id === item.episodeId)
+          ?.versions?.find((v) => v.files.some((f) => f.path === item.path));
+        if (version) {
+          library.store.selectVersion(item.episodeId, version.id);
+          emitLibrary();
+        }
+        dismissPicker();
+        shell.webContents.send("browser:play-download", {
+          workId: work.id,
+          episodeId: item.episodeId,
+        });
+      }
+      if (action.type === "download-action") {
+        if (action.value.action === "remove")
+          await videoDownloads!.remove(action.value.id, action.value.itemId);
+        else
+          videoDownloads!.command(
+            action.value.id,
+            action.value.action,
+            action.value.itemId,
+          );
+      }
+      if (action.type === "transfer-action") {
+        const item = downloads.get(action.value.id);
+        if (!item) throw new Error("transferUnavailable");
+        if (action.value.action === "pause") item.pause();
+        else if (item.canResume()) item.resume();
+        else throw new Error("transferUnavailable");
+      }
+      if (action.type === "open-history") {
+        if (
+          !isWebURL(action.value) ||
+          !browserHistory().some((entry) => entry.url === action.value)
+        )
+          throw new Error("invalidInput");
+        createTab(action.value);
+      }
+      if (action.type === "clear-history") {
+        library.store.setConfig("browserHistory", "[]");
+        emitPicker();
+      }
+      if (action.type === "all-tasks") {
+        select(0);
+        shell.webContents.send("browser:open-page", "tasks");
+      }
       if (action.type === "select") select(action.value);
       if (action.type === "dismiss") dismissPicker(true);
       return pickerState();
@@ -421,6 +763,12 @@ app
         tab = currentWeb(),
         wc = tab?.view.webContents;
       switch (action.type) {
+        case "history-open":
+          await openPicker("history");
+          break;
+        case "tasks-open":
+          await openPicker("tasks");
+          break;
         case "tabs-open":
           await openPicker();
           break;
@@ -504,9 +852,70 @@ app
           else throw new Error("transferUnavailable");
           return { ok: true, data: library.snapshot() };
         }
+        if (action.type === "video-download-action") {
+          const input = downloadActionSchema.parse(action.value);
+          if (input.action === "remove")
+            await videoDownloads!.remove(input.id, input.itemId);
+          else videoDownloads!.command(input.id, input.action, input.itemId);
+          return { ok: true, data: library.snapshot() };
+        }
+        if (action.type === "online-player-error") {
+          const detail = z
+            .object({
+              episodeId: z.string().max(100),
+              stage: z.enum(["dash", "video"]),
+              code: z.string().max(100),
+            })
+            .strict()
+            .parse(action.value);
+          logEvent(
+            "playback.player-failed",
+            {
+              workId: detail.episodeId,
+              phase: detail.stage,
+              errorCode: detail.code,
+            },
+            "error",
+          );
+          return { ok: true };
+        }
+        if (action.type === "online-media") {
+          const input = z
+            .union([
+              z
+                .string()
+                .max(100)
+                .transform((episodeId) => ({ episodeId, quality: undefined })),
+              z
+                .object({
+                  episodeId: z.string().max(100),
+                  quality: z.number().int().min(0).max(1000).optional(),
+                })
+                .strict(),
+            ])
+            .parse(action.value);
+          return {
+            ok: true,
+            data: await traced(
+              "playback.resolve",
+              { workId: input.episodeId },
+              () => onlinePlayback.source(input.episodeId, input.quality),
+            ),
+          };
+        }
         return {
           ok: true,
-          data: await library.request(action.type, action.value),
+          data: [
+            "state",
+            "progress",
+            "organize-progress",
+            "source-authorization",
+            "source-account-status",
+          ].includes(action.type)
+            ? await library.request(action.type, action.value)
+            : await traced("library.action", { operation: action.type }, () =>
+                library.request(action.type, action.value),
+              ),
         };
       } catch (e) {
         const message =
@@ -520,24 +929,51 @@ app
     window.on("blur", () => dismissPicker());
     window.on("close", () => {
       if (closing) return;
+      persistSession();
       closing = true;
       for (const tab of tabs.values())
         if (tab.kind === "web" && !tab.view.webContents.isDestroyed())
           tab.view.webContents.close();
       shell.webContents.close();
       tabPicker?.webContents.close();
-      void library.close().finally(() => app.quit());
+      capture?.close();
+      void videoDownloads
+        ?.close()
+        .finally(() => library.close().finally(() => app.quit()));
     });
     await shell.webContents.loadURL(
       pathToFileURL(path.join(__dirname, "ui/index.html")).href,
     );
+    try {
+      const previous = z
+        .object({
+          urls: z.array(z.string().max(8192)).max(200),
+          active: z.number().int(),
+        })
+        .parse(JSON.parse(library.store.config("browserSession") || "{}"));
+      const ids: number[] = [];
+      for (const url of previous.urls)
+        if (url === "about:blank" || isWebURL(url)) {
+          createTab(url);
+          ids.push(active);
+        }
+      select(ids[previous.active] || 0);
+    } catch {
+      /* No previous session, or invalid saved data. */
+    }
+    restoredSession = true;
     layout();
     emit();
     emitLibrary();
+    void videoDownloads.reconcile();
     library.automatic.start();
+    void library.repairMissingArtwork();
     if (library.store.preferences().refreshOnOpen) void library.refresh();
   })
-  .catch(() => app.quit());
+  .catch((error) => {
+    logEvent("app.start-failed", diagnosticError(error), "error");
+    app.quit();
+  });
 app.on("window-all-closed", () => {
   if (!closing) app.quit();
 });

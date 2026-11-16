@@ -1,77 +1,63 @@
 import { useState } from "react";
-import {
-  PlusIcon,
-  PencilSimpleIcon,
-  TrashIcon,
-  PlugsConnectedIcon,
-  InfoIcon,
-} from "@phosphor-icons/react";
-import {
-  Button,
-  Choice,
-  Confirm,
-  FormField,
-  IconButton,
-  Blank,
-  Modal,
-} from "./common";
-import { Input } from "./components/ui/input";
+import { Button, Choice, FormField } from "./common";
 import { Checkbox } from "./components/ui/checkbox";
+import { Field, FieldGroup, FieldLabel } from "./components/ui/field";
 import { recognitionOptions } from "./recognition-flow";
-import { FieldGroup } from "./components/ui/field";
-import { SourceEditor } from "./source-editor";
 import { PromptDialog } from "./prompt-editor";
-import {
-  newSource,
-  providers,
-  type CustomSource,
-  type SettingsState,
-} from "../shared/settings";
+import type { SettingsState } from "../shared/settings";
 import { errorMessage, useI18n } from "./i18n";
 import { toast } from "sonner";
 
 export function RecognitionSettings({
   config,
+  connections,
+  onSources,
 }: {
   config: SettingsState["recognition"];
+  connections?: SettingsState["aiConnections"];
+  onSources(): void;
 }) {
   const t = useI18n();
-  const [editing, setEditing] = useState<CustomSource | null>(null),
-    [prompt, setPrompt] = useState(false),
-    [remove, setRemove] = useState<CustomSource | null>(null);
-  const [credentials, setCredentials] = useState(false),
-    [token, setToken] = useState(""),
-    [tokenBusy, setTokenBusy] = useState(false);
+  const [prompt, setPrompt] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const update = (patch: Partial<Omit<typeof config, "sources">>) =>
     window.tamki.library("recognition-preferences", patch);
   const apply = (patch: Partial<Omit<typeof config, "sources">>) =>
     void update(patch).catch((e) => toast.error(errorMessage(e, t)));
   return (
-    <FieldGroup>
-      <div className="automatic-setting">
-        <label className="checkbox-row">
-          <Checkbox
-            checked={config.automatic !== false}
-            onCheckedChange={(value) => apply({ automatic: value === true })}
-          />
-          {t("automaticRecognition")}
-        </label>
-        <Button
-          variant="secondary"
-          size="sm"
-          disabled={config.automatic === false}
-          onClick={() =>
-            void window.tamki
-              .library("retry-recognition")
-              .catch((e) => toast.error(errorMessage(e, t)))
-          }
-        >
-          {t("retryUnidentified")}
-        </Button>
+    <>
+      <div className="section-heading recognition-heading">
+        <h2>{t("recognition")}</h2>
+        <div className="actions">
+          <Button
+            variant="secondary"
+            disabled={config.automatic === false || retrying}
+            onClick={() => {
+              setRetrying(true);
+              void window.tamki
+                .library("retry-recognition")
+                .catch((e) => toast.error(errorMessage(e, t)))
+                .finally(() => setRetrying(false));
+            }}
+          >
+            {t("retryUnidentified")}
+          </Button>
+          <Button variant="secondary" onClick={() => setPrompt(true)}>
+            {t("aiPrompt")}
+          </Button>
+          <Button variant="secondary" onClick={onSources}>
+            {t("sourceSettings")}
+          </Button>
+        </div>
       </div>
-      <FormField label={t("filenameParser")}>
-        <div className="field-control-row">
+      <FieldGroup className="recognition-controls">
+        <FormField
+          label={t("filenameParser")}
+          htmlFor="filename-parser"
+          help={t("parserHelp")}
+        >
           <Choice
+            id="filename-parser"
             value={config.parser}
             label={t("filenameParser")}
             onChange={(parser) =>
@@ -82,13 +68,8 @@ export function RecognitionSettings({
               { value: "anitomy", label: t("parserAnime") },
             ]}
           />
-          <IconButton label={t("parserHelp")}>
-            <InfoIcon />
-          </IconButton>
-        </div>
-      </FormField>
-      <FormField label={t("defaultSource")}>
-        <div className="field-control-row">
+        </FormField>
+        <FormField label={t("defaultSource")}>
           <Choice
             label={t("defaultSource")}
             value={config.defaultSourceId}
@@ -97,131 +78,22 @@ export function RecognitionSettings({
               config,
               t("filenameSource"),
               t("notConfigured"),
+              connections,
             )}
           />
-          <IconButton
-            label={t("tmdbCredentials")}
-            onClick={() => setCredentials(true)}
-          >
-            <PencilSimpleIcon />
-          </IconButton>
-        </div>
-      </FormField>
-      <div className="settings-list">
-        <div className="section-heading source-heading">
-          <h3>{t("customSources")}</h3>
-          <div className="actions">
-            <Button variant="secondary" onClick={() => setPrompt(true)}>
-              {t("aiPrompt")}
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={() =>
-                setEditing({
-                  ...newSource(),
-                  hasKey: false,
-                  hasSearchKey: false,
-                  models: [],
-                })
-              }
-            >
-              <PlusIcon data-icon="inline-start" />
-              {t("addSource")}
-            </Button>
-          </div>
-        </div>
-        {config.sources.length ? (
-          <div>
-            {config.sources.map((s) => (
-              <div className="connection-row" key={s.id}>
-                <div className="connection-icon">
-                  <PlugsConnectedIcon />
-                </div>
-                <div className="connection-copy">
-                  <strong>{s.name}</strong>
-                  <span className="muted">
-                    {s.provider === "openai-compatible"
-                      ? t("compatibleProvider")
-                      : providers.find((p) => p.id === s.provider)?.name}{" "}
-                    · {s.model}
-                  </span>
-                </div>
-                <IconButton
-                  label={t("editSource")}
-                  onClick={() => setEditing(s)}
-                >
-                  <PencilSimpleIcon />
-                </IconButton>
-                <IconButton
-                  label={t("removeSource")}
-                  onClick={() => setRemove(s)}
-                >
-                  <TrashIcon />
-                </IconButton>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <Blank title={t("noCustomSources")} size="section" />
-        )}
-      </div>
-      {credentials && (
-        <Modal
-          open
-          title={t("tmdbCredentials")}
-          onClose={() => !tokenBusy && setCredentials(false)}
-          footer={
-            <>
-              <Button
-                variant="secondary"
-                disabled={tokenBusy}
-                onClick={() => setCredentials(false)}
-              >
-                {t("cancel")}
-              </Button>
-              <Button
-                disabled={tokenBusy || !token.trim()}
-                onClick={() => {
-                  setTokenBusy(true);
-                  void window.tamki
-                    .library("tmdb-credentials", token)
-                    .then(() => {
-                      setToken("");
-                      setCredentials(false);
-                    })
-                    .catch((e) => toast.error(errorMessage(e, t)))
-                    .finally(() => setTokenBusy(false));
-                }}
-              >
-                {t("save")}
-              </Button>
-            </>
-          }
-        >
-          <div className="modal-body">
-            <FieldGroup>
-              <FormField label={t("tmdbToken")} htmlFor="tmdb-token">
-                <Input
-                  id="tmdb-token"
-                  type="password"
-                  value={token}
-                  placeholder={config.tmdbConfigured ? t("configured") : ""}
-                  onChange={(e) => setToken(e.target.value)}
-                  autoComplete="off"
-                />
-              </FormField>
-            </FieldGroup>
-          </div>
-        </Modal>
-      )}
-      {editing ? (
-        <SourceEditor
-          initial={editing}
-          isNew={!config.sources.some((s) => s.id === editing.id)}
-          onClose={() => setEditing(null)}
-        />
-      ) : null}
-      {prompt ? (
+        </FormField>
+        <Field orientation="horizontal" className="recognition-automatic">
+          <Checkbox
+            id="automatic-recognition"
+            checked={config.automatic !== false}
+            onCheckedChange={(value) => apply({ automatic: value === true })}
+          />
+          <FieldLabel htmlFor="automatic-recognition">
+            {t("automaticRecognition")}
+          </FieldLabel>
+        </Field>
+      </FieldGroup>
+      {prompt && (
         <PromptDialog
           initial={config.aiPrompt}
           onClose={() => setPrompt(false)}
@@ -230,20 +102,7 @@ export function RecognitionSettings({
             setPrompt(false);
           }}
         />
-      ) : null}
-      {remove ? (
-        <Confirm
-          title={t("removeSourceTitle")}
-          description={t("removeSourceBody")}
-          onClose={() => setRemove(null)}
-          onConfirm={() =>
-            void window.tamki
-              .library("remove-source", remove.id)
-              .then(() => setRemove(null))
-              .catch((e) => toast.error(errorMessage(e, t)))
-          }
-        />
-      ) : null}
-    </FieldGroup>
+      )}
+    </>
   );
 }

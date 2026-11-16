@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  InfoIcon,
   FolderIcon,
   HardDrivesIcon,
   PlusIcon,
@@ -14,6 +13,7 @@ import {
 import {
   Button,
   IconButton,
+  HelpTip,
   Modal,
   Fade,
   FormField,
@@ -22,7 +22,7 @@ import {
   Blank,
   Confirm,
 } from "./common";
-import { FieldGroup } from "./components/ui/field";
+import { Field, FieldLabel, FieldGroup } from "./components/ui/field";
 import { Checkbox } from "./components/ui/checkbox";
 import { Input } from "./components/ui/input";
 import { useI18n, errorMessage } from "./i18n";
@@ -55,6 +55,9 @@ export function ConnectionWizard({
     url: string;
     expiresAt: number;
   }>();
+  const [allowLANHTTP, setAllowLANHTTP] = useState(
+    initial?.allowLANHTTP || false,
+  );
   const [name, setName] = useState(initial?.name || "");
   const [roots, setRoots] = useState<string[]>(initial?.roots || []);
   const [depths, setDepths] = useState<Record<string, number>>(() =>
@@ -211,6 +214,7 @@ export function ConnectionWizard({
         type,
         name,
         roots,
+        allowLANHTTP,
         scanDepths: Object.fromEntries(
           roots.map((root) => [root, depths[root] ?? 3]),
         ),
@@ -361,6 +365,17 @@ export function ConnectionWizard({
                 onChange={(e) => setName(e.target.value)}
               />
             </FormField>
+            {type === "zspace" && (
+              <Field orientation="horizontal">
+                <Checkbox
+                  id="allow-lan-http"
+                  checked={allowLANHTTP}
+                  onCheckedChange={(v) => setAllowLANHTTP(v === true)}
+                />
+                <FieldLabel htmlFor="allow-lan-http">{t("lanHTTP")}</FieldLabel>
+                <HelpTip text={t("lanHTTPHelp")} />
+              </Field>
+            )}
             <FormField label={t("roots")} error={error}>
               <div className="directory-toolbar">
                 <IconButton
@@ -438,10 +453,10 @@ export function ConnectionWizard({
             </FormField>
             <div className="settings-list">
               <div className="section-heading">
-                <h3>{t("scanDepth")}</h3>
-                <IconButton label={t("scanDepthHelp")}>
-                  <InfoIcon />
-                </IconButton>
+                <div className="field-title">
+                  <h3>{t("scanDepth")}</h3>
+                  <HelpTip text={t("scanDepthHelp")} />
+                </div>
               </div>
               <div className="selected-roots">
                 {roots.map((root) => (

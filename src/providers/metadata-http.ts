@@ -1,4 +1,5 @@
 import { ProviderError } from "./provider";
+import { boundedJSON, exceedsContext } from "./openai-stream";
 /** Bound bodies and refuse redirects, including for requests containing secrets. */
 export async function metadataJSON(
   url: string | URL,
@@ -16,7 +17,11 @@ export async function metadataJSON(
     },
   });
   if (!response.ok) {
-    await response.body?.cancel();
+    if ([400, 413].includes(response.status)) {
+      const data = await boundedJSON(response, 65536).catch(() => null);
+      if (exceedsContext(data))
+        throw new ProviderError("recognitionContextLimit");
+    } else await response.body?.cancel();
     throw new ProviderError(
       response.status === 401 || response.status === 403
         ? "sourceUnauthorized"

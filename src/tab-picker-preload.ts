@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 
-// This surface can only inspect tabs and activate one. Never expose library IPC.
+// This trusted surface can inspect tabs/history/tasks and open their main views.
+// Its main-process handler validates each action; no generic library IPC is exposed.
 contextBridge.exposeInMainWorld("tamkiTabs", {
   action: (type: string, value?: unknown) =>
     ipcRenderer.invoke("tabs:action", { type, value }),

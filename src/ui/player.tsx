@@ -16,9 +16,17 @@ import {
   ListBulletsIcon,
   XIcon,
 } from "@phosphor-icons/react";
-import type { Work } from "../shared/model";
+import type { Work, OnlineWork } from "../shared/model";
 import { episodeName } from "../shared/model";
-import { IconButton, Button, TextTip, Fade, clock } from "./common";
+import { mediaSelection } from "../shared/versions";
+import {
+  IconButton,
+  Button,
+  TextTip,
+  Fade,
+  HorizontalScroll,
+  clock,
+} from "./common";
 import {
   Select,
   SelectTrigger,
@@ -36,11 +44,17 @@ import { cn } from "./lib/utils";
 
 export function Player({
   work,
+  online = false,
   active,
   requestedEpisode,
+  relatedWorks = [],
+  onWork,
   activate,
 }: {
-  work: Work;
+  work: OnlineWork;
+  relatedWorks?: Work[];
+  onWork?(id: string): void;
+  online?: boolean;
   active: boolean;
   requestedEpisode?: { id: string; nonce: number };
   activate(): void;
@@ -70,18 +84,40 @@ export function Player({
     [boundary, setBoundary] = useState({ atStart: true, atEnd: true });
   const index = work.episodes.findIndex((e) => e.id === episodeId),
     episode = work.episodes[index];
-  const currentEpisode = useRef(episode);
-  currentEpisode.current = episode;
-  const loadedId = useRef<string | null>(null);
+  const groups = work.playbackGroups || [];
+  const currentGroup = groups.find((g) => g.episodeIds.includes(episodeId));
+  const [browseGroup, setBrowseGroup] = useState(currentGroup?.id);
+  const browsing = groups.find((g) => g.id === browseGroup) || currentGroup;
+  const queueEpisodes = browsing
+    ? browsing.episodeIds
+        .map((id) => work.episodes.find((e) => e.id === id)!)
+        .filter(Boolean)
+    : work.episodes;
+  const currentEpisodes = currentGroup
+    ? work.episodes.filter((e) => currentGroup.episodeIds.includes(e.id))
+    : work.episodes;
+  const currentIndex = currentEpisodes.findIndex((e) => e.id === episodeId);
+  const [quality, setQuality] = useState(0);
+  const [qualities, setQualities] = useState<{ id: number; label: string }[]>(
+    [],
+  );
+  const [actualQuality, setActualQuality] = useState<number>();
+  const [retry, setRetry] = useState(0);
+  const [failureText, setFailureText] = useState("");
+  const resumePosition = useRef<number | null>(null);
+  const loadedMedia = useRef<ReturnType<typeof mediaSelection> | null>(null);
+  const nextAutoplay = useRef(true);
+  const [versionMenu, setVersionMenu] = useState(false);
+  const [changingVersion, setChangingVersion] = useState(false);
   const saved = useRef(0),
     hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const commit = useCallback((force = false) => {
+    if (online) return;
     const v = video.current,
-      e = currentEpisode.current;
+      e = loadedMedia.current;
     if (
       !v ||
       !e ||
-      loadedId.current !== e.id ||
       !Number.isFinite(v.duration) ||
       v.duration <= 0 ||
       v.readyState < 1
@@ -91,7 +127,7 @@ export function Player({
     saved.current = Date.now();
     void window.tamki
       .library("progress", {
-        id: e.id,
+        ...e,
         position: v.currentTime,
         duration: v.duration,
       })
@@ -106,6 +142,7 @@ export function Player({
   useEffect(() => {
     if (requestedEpisode) {
       commit(true);
+      nextAutoplay.current = true;
       setEpisodeId(requestedEpisode.id);
     }
   }, [requestedEpisode?.nonce]);
@@ -116,43 +153,99 @@ export function Player({
     const v = video.current;
     if (!v || !episode) return;
     let cancelled = false;
+    let dashPlayer: { reset(): void } | undefined;
+    const selection = mediaSelection(episode);
+    const autoplay = nextAutoplay.current;
     setDuration(0);
     setPosition(0);
     setFailure(false);
     setBoundary({ atStart: true, atEnd: true });
     const restore = () => {
       if (cancelled) return;
-      loadedId.current = episode.id;
+      loadedMedia.current = selection;
       setDuration(Number.isFinite(v.duration) ? v.duration : 0);
-      if (episode.position > 0 && episode.position < v.duration - 0.02)
-        v.currentTime = episode.position;
+      const position = resumePosition.current ?? episode.position;
+      resumePosition.current = null;
+      if (position > 0 && position < v.duration - 0.02)
+        v.currentTime = position;
       v.volume = volume;
       v.muted = muted;
       v.playbackRate = Number(speed);
-      void v.play().catch(() => setPaused(true));
+      if (autoplay) void v.play().catch(() => setPaused(true));
+      else setPaused(true);
     };
     v.addEventListener("loadedmetadata", restore, { once: true });
-    void window.tamki
-      .library<string>("media", episode.id)
-      .then((url) => {
-        if (!cancelled) {
+    const source: Promise<{
+      url: string;
+      dash: boolean;
+      quality?: number;
+      qualities?: { id: number; label: string }[];
+    }> = online
+      ? window.tamki.library<{
+          url: string;
+          dash: boolean;
+          quality?: number;
+          qualities?: { id: number; label: string }[];
+        }>("online-media", { episodeId: episode.id, quality })
+      : window.tamki
+          .library<string>("media", selection)
+          .then((url) => ({ url, dash: false }));
+    void source
+      .then(async (source) => {
+        if (cancelled) return;
+        const { url, dash } = source;
+        if ("qualities" in source) {
+          setQualities(source.qualities || []);
+          setActualQuality(source.quality);
+        }
+        if (dash) {
+          const { MediaPlayer } = await import("dashjs");
+          if (cancelled) return;
+          const player = MediaPlayer().create();
+          dashPlayer = player;
+          player.updateSettings({ debug: { logLevel: 0 } });
+          player.on(MediaPlayer.events.ERROR, (event: any) => {
+            if (!cancelled) {
+              setFailure(true);
+              setFailureText(t("onlinePlaybackFailed"));
+              void window.tamki
+                .library("online-player-error", {
+                  episodeId: episode.id,
+                  stage: "dash",
+                  code: String(event?.error?.code ?? "unknown").slice(0, 100),
+                })
+                .catch(() => {});
+            }
+          });
+          player.initialize(v, url, false);
+        } else {
           v.src = url;
           v.load();
         }
       })
-      .catch(() => {
-        if (!cancelled) setFailure(true);
+      .catch((error) => {
+        if (!cancelled) {
+          setFailure(true);
+          setFailureText(errorMessage(error, t));
+        }
       });
     return () => {
       commit(true);
-      loadedId.current = null;
+      loadedMedia.current = null;
       cancelled = true;
       v.removeEventListener("loadedmetadata", restore);
+      dashPlayer?.reset();
       v.pause();
       v.removeAttribute("src");
       v.load();
     };
-  }, [episodeId]);
+  }, [
+    episodeId,
+    episode?.activeVersionId,
+    episode?.activeFileId,
+    quality,
+    retry,
+  ]);
   useEffect(
     () => () => {
       commit(true);
@@ -201,12 +294,12 @@ export function Player({
   const show = () => {
     setShown(true);
     if (hideTimer.current) clearTimeout(hideTimer.current);
-    if (fullscreen && !video.current?.paused && !queue)
+    if (fullscreen && !video.current?.paused && !queue && !versionMenu)
       hideTimer.current = setTimeout(() => setShown(false), 2200);
   };
   useEffect(() => {
     show();
-  }, [fullscreen, paused, queue]);
+  }, [fullscreen, paused, queue, versionMenu]);
   const toggle = () => {
     const v = video.current;
     if (!v || failure) return;
@@ -225,6 +318,10 @@ export function Player({
   };
   const choose = (id: string) => {
     commit(true);
+    nextAutoplay.current = true;
+    resumePosition.current = null;
+    setQuality(0);
+    setQualities([]);
     setEpisodeId(id);
     setQueue(false);
   };
@@ -320,7 +417,11 @@ export function Player({
       tabIndex={0}
     >
       <header className="player-header" inert={fullscreen && !shown}>
-        <TextTip>{`${work.title} · ${episodeName(episode)}`}</TextTip>
+        <TextTip>
+          {episodeName(episode) === work.title
+            ? work.title
+            : `${currentGroup?.title || work.title} · ${episodeName(episode)}`}
+        </TextTip>
       </header>
       <div ref={stage} className="player-stage">
         {(mini || pip) && (
@@ -336,7 +437,20 @@ export function Player({
         )}
         {failure && (
           <div className="player-placeholder">
-            <p role="alert">{t("playbackFailed")}</p>
+            <p role="alert">
+              {online
+                ? failureText || t("onlinePlaybackFailed")
+                : t("playbackFailed")}
+            </p>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                resumePosition.current = video.current?.currentTime || 0;
+                setRetry((n) => n + 1);
+              }}
+            >
+              {t("retryPlayback")}
+            </Button>
           </div>
         )}
       </div>
@@ -376,12 +490,23 @@ export function Player({
             commit(true);
           }}
           onError={() => {
-            if (video.current?.getAttribute("src")) setFailure(true);
+            if (video.current?.getAttribute("src")) {
+              setFailure(true);
+              setFailureText(t("onlinePlaybackFailed"));
+              if (online)
+                void window.tamki
+                  .library("online-player-error", {
+                    episodeId: episode.id,
+                    stage: "video",
+                    code: String(video.current.error?.code || "unknown"),
+                  })
+                  .catch(() => {});
+            }
           }}
           onEnded={() => {
             commit(true);
-            if (index < work.episodes.length - 1)
-              choose(work.episodes[index + 1].id);
+            if (currentIndex < currentEpisodes.length - 1)
+              choose(currentEpisodes[currentIndex + 1].id);
             else setPaused(true);
           }}
         />
@@ -441,15 +566,15 @@ export function Player({
             </IconButton>
             <IconButton
               label={t("previousEpisode")}
-              disabled={index <= 0}
-              onClick={() => choose(work.episodes[index - 1].id)}
+              disabled={currentIndex <= 0}
+              onClick={() => choose(currentEpisodes[currentIndex - 1].id)}
             >
               <SkipBackIcon />
             </IconButton>
             <IconButton
               label={t("nextEpisode")}
-              disabled={index >= work.episodes.length - 1}
-              onClick={() => choose(work.episodes[index + 1].id)}
+              disabled={currentIndex >= currentEpisodes.length - 1}
+              onClick={() => choose(currentEpisodes[currentIndex + 1].id)}
             >
               <SkipForwardIcon />
             </IconButton>
@@ -497,6 +622,74 @@ export function Player({
                 }}
               />
             </div>
+            {online && qualities.length > 0 && (
+              <Select
+                value={String(quality || actualQuality || qualities[0].id)}
+                onOpenChange={setVersionMenu}
+                onValueChange={(value) => {
+                  resumePosition.current = video.current?.currentTime || 0;
+                  nextAutoplay.current = !video.current?.paused;
+                  setQuality(Number(value));
+                }}
+              >
+                <SelectTrigger
+                  aria-label={t("playbackQuality")}
+                  className="player-version-select"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent
+                  container={fullscreen ? root.current || undefined : undefined}
+                >
+                  <SelectGroup>
+                    {qualities.map((q) => (
+                      <SelectItem key={q.id} value={String(q.id)}>
+                        {q.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            )}
+            {(episode.versions?.length || 0) > 1 && (
+              <Select
+                value={episode.activeVersionId}
+                disabled={changingVersion}
+                onOpenChange={setVersionMenu}
+                onValueChange={(versionId) => {
+                  commit(true);
+                  nextAutoplay.current = !video.current?.paused;
+                  setChangingVersion(true);
+                  void window.tamki
+                    .library("select-version", { id: episode.id, versionId })
+                    .catch((e) => toast.error(errorMessage(e, t)))
+                    .finally(() => setChangingVersion(false));
+                }}
+              >
+                <SelectTrigger
+                  aria-label={t("playbackVersion")}
+                  className="player-version-select"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent
+                  container={fullscreen ? root.current || undefined : undefined}
+                >
+                  <SelectGroup>
+                    {episode.versions!.map((v, i) => (
+                      <SelectItem
+                        key={v.id}
+                        value={v.id}
+                        disabled={v.files.every((f) => f.missing)}
+                      >
+                        {v.label ||
+                          t("versionNumber").replace("{n}", String(i + 1))}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            )}
             <Select
               value={speed}
               onValueChange={(v) => {
@@ -523,6 +716,7 @@ export function Player({
               label={t("queue")}
               aria-expanded={queue}
               onClick={() => {
+                setBrowseGroup(currentGroup?.id);
                 setQueue(!queue);
                 show();
               }}
@@ -562,8 +756,46 @@ export function Player({
               <XIcon />
             </IconButton>
           </header>
+          {(groups.length > 1 || relatedWorks.length > 1) && (
+            <HorizontalScroll
+              className="player-queue-groups"
+              role="group"
+              aria-label={t("playerSeries")}
+            >
+              {groups.length > 1
+                ? groups.map((g) => (
+                    <Button
+                      key={g.id}
+                      variant={browsing?.id === g.id ? "secondary" : "ghost"}
+                      aria-pressed={browsing?.id === g.id}
+                      onClick={() => setBrowseGroup(g.id)}
+                    >
+                      {g.title}
+                    </Button>
+                  ))
+                : relatedWorks.map((w) => (
+                    <Button
+                      key={w.id}
+                      variant={w.id === work.id ? "secondary" : "ghost"}
+                      aria-pressed={w.id === work.id}
+                      onClick={() => {
+                        commit(true);
+                        video.current?.pause();
+                        onWork?.(w.id);
+                      }}
+                    >
+                      {w.title}
+                    </Button>
+                  ))}
+            </HorizontalScroll>
+          )}
+          {work.collectionError && (
+            <p className="player-queue-caption" role="status">
+              {t("playerIncompleteDirectory")}
+            </p>
+          )}
           <Fade>
-            {work.episodes.map((e) => (
+            {queueEpisodes.map((e) => (
               <Button
                 key={e.id}
                 variant={e.id === episode.id ? "secondary" : "ghost"}

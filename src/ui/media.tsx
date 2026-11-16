@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { FilmSlateIcon } from "@phosphor-icons/react";
+import { mediaSelection } from "../shared/versions";
 import type { Episode, LibraryState } from "../shared/model";
 const posters = new Map<string, string>();
 let probes = 0;
@@ -83,7 +84,10 @@ export function useLibraryDurations(state?: LibraryState) {
       }
       release = done;
       try {
-        const url = await window.tamki.library<string>("media", episode.id);
+        const url = await window.tamki.library<string>(
+          "media",
+          mediaSelection(episode),
+        );
         if (finished || !mounted.current) {
           finish();
           return;
@@ -96,7 +100,7 @@ export function useLibraryDurations(state?: LibraryState) {
           if (Number.isFinite(duration) && duration > 0)
             void window.tamki
               .library("progress", {
-                id: episode.id,
+                ...mediaSelection(episode),
                 position: 0,
                 duration,
                 resume: false,
@@ -125,7 +129,7 @@ export function useLibraryDurations(state?: LibraryState) {
           episode.duration !== null
         )
           continue;
-        const key = `${episode.id}:${episode.modified}`;
+        const key = `${episode.id}:${episode.activeFileId || episode.id}:${episode.modified}:${episode.size}`;
         wanted.add(key);
         if (!attempted.current.has(key)) {
           attempted.current.add(key);
@@ -154,11 +158,14 @@ export function Poster({
   probe?: boolean;
   cover?: string;
 }) {
+  cover ||= episode?.cover;
   const artwork = useArtwork(cover);
   const [failedCover, setFailedCover] = useState<string>();
   const coverImage = cover !== failedCover ? artwork : undefined;
   const ref = useRef<HTMLDivElement>(null);
-  const key = episode ? `${episode.id}:${episode.modified}` : "";
+  const key = episode
+    ? `${episode.id}:${episode.activeFileId || episode.id}:${episode.modified}:${episode.size}`
+    : "";
   const [image, setImage] = useState(posters.get(key)),
     [visible, setVisible] = useState(false);
   useEffect(() => {
@@ -178,6 +185,7 @@ export function Poster({
       !visible ||
       !probe ||
       !episode ||
+      (episode.artworkSource && !episode.artworkError && !failedCover) ||
       episode.missing ||
       posters.has(key)
     )
@@ -197,72 +205,114 @@ export function Poster({
       release?.();
       release = undefined;
     };
-    void acquire().then(async (done) => {
-      release = done;
-      if (disposed) {
-        cleanup();
-        return;
-      }
-      try {
-        const url = await window.tamki.library<string>("media", episode.id);
+    void window.tamki
+      .library<{ key: string; url: string | null }>(
+        "thumbnail",
+        mediaSelection(episode),
+      )
+      .then(async (cached) => {
+        if (disposed) return;
+        if (cached.url) {
+          posters.set(key, cached.url);
+          if (posters.size > 250) posters.delete(posters.keys().next().value!);
+          setImage(cached.url);
+          return;
+        }
+        const done = await acquire();
+        release = done;
+        if (posters.has(key)) {
+          if (!disposed) setImage(posters.get(key));
+          cleanup();
+          return;
+        }
         if (disposed) {
           cleanup();
           return;
         }
-        const media = document.createElement("video");
-        video = media;
-        media.crossOrigin = "anonymous";
-        media.muted = true;
-        media.preload = "metadata";
-        timer = setTimeout(cleanup, 12000);
-        media.onloadedmetadata = () => {
-          if (!Number.isFinite(media.duration) || media.duration <= 0) {
+        try {
+          const url = await window.tamki.library<string>(
+            "media",
+            mediaSelection(episode),
+          );
+          if (disposed) {
             cleanup();
             return;
           }
-          if (episode.duration === null)
-            void window.tamki
-              .library("progress", {
-                id: episode.id,
-                position: episode.position,
-                duration: media.duration,
-                resume: false,
-              })
-              .catch(() => {});
-          media.currentTime = Math.min(5, media.duration / 5);
-        };
-        media.onseeked = () => {
-          try {
-            const canvas = document.createElement("canvas");
-            canvas.width = 360;
-            canvas.height = Math.max(
-              1,
-              Math.round((360 * media.videoHeight) / media.videoWidth),
-            );
-            canvas
-              .getContext("2d")!
-              .drawImage(media, 0, 0, canvas.width, canvas.height);
-            const data = canvas.toDataURL("image/jpeg", 0.75);
-            posters.set(key, data);
-            if (posters.size > 250)
-              posters.delete(posters.keys().next().value!);
-            if (!disposed) setImage(data);
-          } catch {
-          } finally {
-            cleanup();
-          }
-        };
-        media.onerror = cleanup;
-        media.src = url;
-      } catch {
-        cleanup();
-      }
-    });
+          const media = document.createElement("video");
+          video = media;
+          media.crossOrigin = "anonymous";
+          media.muted = true;
+          media.preload = "metadata";
+          timer = setTimeout(cleanup, 30000);
+          media.onloadedmetadata = () => {
+            if (!Number.isFinite(media.duration) || media.duration <= 0) {
+              cleanup();
+              return;
+            }
+            if (episode.duration === null)
+              void window.tamki
+                .library("progress", {
+                  ...mediaSelection(episode),
+                  position: episode.position,
+                  duration: media.duration,
+                  resume: false,
+                })
+                .catch(() => {});
+            media.currentTime = Math.min(5, media.duration / 5);
+          };
+          media.onseeked = () => {
+            try {
+              const canvas = document.createElement("canvas");
+              canvas.width = 360;
+              canvas.height = Math.max(
+                1,
+                Math.min(
+                  720,
+                  Math.round((360 * media.videoHeight) / media.videoWidth),
+                ),
+              );
+              canvas
+                .getContext("2d")!
+                .drawImage(media, 0, 0, canvas.width, canvas.height);
+              const data = canvas.toDataURL("image/jpeg", 0.75);
+              posters.set(key, data);
+              if (posters.size > 250)
+                posters.delete(posters.keys().next().value!);
+              if (!disposed) setImage(data);
+              void window.tamki
+                .library<{ key: string; url: string | null }>(
+                  "thumbnail-save",
+                  { ...mediaSelection(episode), key: cached.key, data },
+                )
+                .then((saved) => {
+                  if (saved.url) posters.set(key, saved.url);
+                })
+                .catch(() => {});
+            } catch {
+            } finally {
+              cleanup();
+            }
+          };
+          media.onerror = cleanup;
+          media.src = url;
+        } catch {
+          cleanup();
+        }
+      })
+      .catch(() => cleanup());
     return () => {
       disposed = true;
       cleanup();
     };
-  }, [visible, key, probe, coverImage]);
+  }, [
+    visible,
+    key,
+    probe,
+    coverImage,
+    episode?.artworkSource,
+    episode?.artworkError,
+    failedCover,
+  ]);
   return (
     <div ref={ref} className="poster">
       {coverImage || image ? (

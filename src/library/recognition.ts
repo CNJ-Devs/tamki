@@ -1,3 +1,4 @@
+import { observedFetch, traced, logEvent } from "../diagnostics";
 import { net } from "electron";
 import {
   recognitionRequestSchema,
@@ -8,7 +9,6 @@ import {
 import type { Episode } from "../shared/model";
 import type { LibraryStore } from "./store";
 import type { SettingsService } from "./settings";
-import { sourceConfig } from "../shared/settings";
 import { builtinRecognition } from "../providers/metadata";
 import { aiRecognitionBatches } from "../providers/ai-recognition";
 import { parseFilename } from "./filename";
@@ -33,6 +33,19 @@ export class RecognitionService {
       draft: ReturnType<typeof recognitionRequestSchema.parse>["draft"],
     ) => Promise<Episode[]>,
   ): Promise<RecognitionResponse> {
+    const input = recognitionRequestSchema.parse(value);
+    return traced(
+      "recognition",
+      { jobId: input.jobId, workId: input.draft.id, phase: input.scope },
+      () => this.execute(value, prepare),
+    );
+  }
+  private async execute(
+    value: unknown,
+    prepare: (
+      draft: ReturnType<typeof recognitionRequestSchema.parse>["draft"],
+    ) => Promise<Episode[]>,
+  ): Promise<RecognitionResponse> {
     const request = recognitionRequestSchema.parse(value);
     if (this.jobs.has(request.jobId) || this.jobs.size >= 4)
       throw new ProviderError("recognitionBusy");
@@ -41,7 +54,10 @@ export class RecognitionService {
       .works.find((w) => w.id === request.draft.id);
     if (!work) throw new ProviderError("mediaMissing");
     const config = this.settings.snapshot().recognition;
-    const source = config.sources.find((s) => s.id === request.sourceId);
+    const source = this.settings.recognitionSelection(
+      request.sourceId,
+      request.model,
+    );
     const controller = new AbortController();
     this.jobs.set(request.jobId, controller);
     const timer = setTimeout(
@@ -65,6 +81,17 @@ export class RecognitionService {
             filename: file.fileName,
             duration: file.duration,
             order: order + 1,
+            ...(file.versions && file.versions.length > 1
+              ? {
+                  versions: file.versions.map((v) => ({
+                    label: v.label,
+                    files: v.files.map((f) => ({
+                      filename: f.fileName,
+                      duration: f.duration,
+                    })),
+                  })),
+                }
+              : {}),
           };
         })
         .filter((f) => request.scope === "work" || f.id === request.episodeId);
@@ -75,6 +102,14 @@ export class RecognitionService {
         scope: request.scope,
         files,
       };
+      if (request.feedback) {
+        if (!source || request.candidate)
+          throw new ProviderError("invalidInput");
+        const previous = validateRecognition(request.feedback.previous, input);
+        if (previous.work?.cover && !previous.work.cover.startsWith("https://"))
+          previous.work.cover = null;
+        input.feedback = { previous, messages: request.feedback.messages };
+      }
       let response: RecognitionResponse;
       if (request.sourceId === "filename") {
         response = {
@@ -107,32 +142,54 @@ export class RecognitionService {
             : "",
           this.store.preferences().language,
           controller.signal,
-          net.fetch.bind(net) as typeof fetch,
+          observedFetch(net.fetch.bind(net) as typeof fetch),
         );
       } else {
         if (!source) throw new ProviderError("recognitionSourceMissing");
-        response = await aiRecognitionBatches(
-          sourceConfig(source),
-          this.settings.secret(source.id, "key"),
-          this.settings.secret(source.id, "search"),
-          input,
-          config.aiPrompt,
-          controller.signal,
-          net.fetch.bind(net) as typeof fetch,
-        );
+        const runtime = this.settings.recognitionRuntime(source);
+        response = ["gemini-oauth", "claude-code"].includes(source.provider)
+          ? await this.settings.accounts.recognize(
+              runtime,
+              input,
+              config.aiPrompt,
+              controller.signal,
+            )
+          : await aiRecognitionBatches(
+              runtime,
+              source.provider === "openai-oauth"
+                ? "oauth-managed"
+                : this.settings.secret(runtime.id, "key"),
+              this.settings.secret(source.id, "search"),
+              input,
+              config.aiPrompt,
+              controller.signal,
+              source.provider === "openai-oauth"
+                ? this.settings.oauth.request(runtime.id)
+                : observedFetch(net.fetch.bind(net) as typeof fetch),
+            );
       }
       controller.signal.throwIfAborted();
       if (response.kind === "result") {
         response.result = validateRecognition(response.result, input);
-        if (response.result.work?.cover) {
+        if (response.result.work?.cover || response.result.work?.coverPage) {
+          response.artworkSource = {
+            cover: response.result.work.cover || null,
+            coverPage: response.result.work.coverPage || null,
+          };
           try {
-            response.result.work.cover = await this.artwork.cache(
+            response.result.work.cover = await this.artwork.resolve(
               response.result.work.cover,
+              response.result.work.coverPage,
               controller.signal,
             );
           } catch {
             response.result.work.cover = null;
             response.artworkError = true;
+            logEvent(
+              "recognition.artwork.failed",
+              { reason: "unavailable" },
+              "warn",
+            );
           }
         }
       }

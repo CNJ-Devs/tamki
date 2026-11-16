@@ -9,7 +9,7 @@ export async function checkRecognition(app, shell) {
   await dialog
     .getByRole("combobox", { name: "Recognition source", exact: true })
     .waitFor();
-  assert.match(await dialog.innerText(), /Fixture source/);
+  assert.match(await dialog.innerText(), /Fixture connection/);
   await dialog.evaluate(async (el) => {
     await Promise.all(el.getAnimations().map((a) => a.finished));
   });

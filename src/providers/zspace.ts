@@ -1,3 +1,5 @@
+import { ZSpaceRoute } from "./zspace-route";
+import { traced, logEvent } from "../diagnostics";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
@@ -114,7 +116,7 @@ export class ZSpaceProvider implements StorageProvider {
         bytes: number,
         content: z.string(),
         encoding: z.literal("base64"),
-        next_offset: number,
+        next_offset: number.nullable(),
       })
       .parse(
         await this.run(
@@ -139,7 +141,9 @@ export class ZSpaceProvider implements StorageProvider {
       data.size !== expectedSize ||
       data.bytes !== bytes.length ||
       bytes.length !== Math.min(length, expectedSize - offset) ||
-      data.next_offset !== offset + bytes.length
+      (data.next_offset === null
+        ? offset + bytes.length !== expectedSize
+        : data.next_offset !== offset + bytes.length)
     )
       throw new ProviderError("mediaChanged");
     return bytes;
@@ -148,6 +152,8 @@ export class ZSpaceProvider implements StorageProvider {
 
 // Only an installed official CLI is used. Tamki neither ships its OAuth client ID nor reads its tokens.
 export class ZSpaceCLI {
+  private routes = new Map<string, ZSpaceRoute>();
+  private loggedRoutes = new Map<string, string>();
   private children = new Set<ChildProcessWithoutNullStreams>();
   private logins = new Map<
     string,
@@ -160,6 +166,7 @@ export class ZSpaceCLI {
   constructor(
     private executable: string,
     private home: string,
+    private allowLANHTTP: (profile: string) => boolean = () => false,
   ) {}
   private async child(profile: string, args: string[]) {
     if (!/^[a-zA-Z0-9-]{1,64}$/.test(profile))
@@ -186,13 +193,75 @@ export class ZSpaceCLI {
     child.once("close", () => this.children.delete(child));
     return child;
   }
-  runner(profile: string): Runner {
-    return (args, signal) => this.run(profile, args, signal);
+  runner(profile: string, timeout = 45000): Runner {
+    return (args, signal) =>
+      traced(
+        "storage.cli",
+        {
+          provider: "zspace",
+          operation: args
+            .slice(0, 2)
+            .filter((a) => /^[a-z-]+$/.test(a))
+            .join("."),
+        },
+        async () => {
+          let route = this.routes.get(profile);
+          if (!route) {
+            route = new ZSpaceRoute(
+              (a, s) => this.run(profile, a, s, 8000),
+              () => this.allowLANHTTP(profile),
+            );
+            this.routes.set(profile, route);
+          }
+          const routing = await route.select(signal);
+          const phase = routing.includes("lan") ? "lan" : "cloud";
+          if (this.loggedRoutes.get(profile) !== phase) {
+            this.loggedRoutes.set(profile, phase);
+            logEvent("storage.route", {
+              provider: "zspace",
+              connectionId: profile,
+              phase,
+            });
+          }
+          try {
+            return await this.run(
+              profile,
+              [...routing, ...args],
+              signal,
+              timeout,
+            );
+          } catch (error) {
+            route.invalidate();
+            if (
+              phase === "lan" &&
+              args[0] === "file" &&
+              ["list", "read", "info", "space"].includes(args[1]) &&
+              error instanceof ProviderError &&
+              ["connectionFailed", "requestTimeout"].includes(error.code)
+            ) {
+              logEvent("storage.route", {
+                provider: "zspace",
+                connectionId: profile,
+                phase: "cloud",
+                reason: "lan-read-failed",
+              });
+              return this.run(
+                profile,
+                ["--clear-host", "--mode", "cloud", ...args],
+                signal,
+                timeout,
+              );
+            }
+            throw error;
+          }
+        },
+      );
   }
   private async run(
     profile: string,
     args: string[],
     signal?: AbortSignal,
+    timeout = 45000,
   ): Promise<unknown> {
     signal?.throwIfAborted();
     const child = await this.child(profile, args);
@@ -206,7 +275,7 @@ export class ZSpaceCLI {
       const timer = setTimeout(() => {
         child.kill();
         reject(new ProviderError("requestTimeout"));
-      }, 45000);
+      }, timeout);
       signal?.addEventListener("abort", stop, { once: true });
       child.stdout.on("data", (b) => {
         output += b.toString();

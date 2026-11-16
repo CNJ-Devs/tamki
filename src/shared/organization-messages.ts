@@ -1,0 +1,131 @@
+export const organizationMessages = {
+  en: {
+    smartOrganize: "Smart organization",
+    organizationFeedback: "Review and feedback",
+    organizationNoSeries: "No series suggestions",
+    organizationUnselectedMembers:
+      "First review and select these works in Works: {names}",
+    organizationFlaggedCount: "Flagged items · {count}",
+    organizationReviewMeaning:
+      "Lists all AI-flagged questions, relationship name changes and unassigned files. Unflagged items have not necessarily been fact-checked; structural validation does not establish content identity.",
+    organizationFeedbackLabel: "Your decisions or changes",
+    organizationFeedbackPlaceholder:
+      "Describe what to keep, correct or investigate.",
+    organizationNoQuestions:
+      "Nothing currently needs confirmation. You can still suggest changes to this plan.",
+    organizationInspectPlan: "View plan",
+    organizationRefine: "Revise plan",
+    organizationRefining: "Revising",
+    organizationFeedbackLimit:
+      "This conversation is too long. Start a new plan with a summary of your decisions.",
+
+    organizationScope: "Folders",
+    organizationScopeHelp:
+      "Uses each registered folder's scan depth. Directory names, filenames and current library metadata, order and collections are sent to your chosen AI connection. Removed items stay excluded; video contents are never sent.",
+    organizationPreferences: "Organization preferences",
+    organizationPreferencesPlaceholder:
+      "For example: keep each season separate; place related works in a series.",
+    organizationGenerate: "Generate plan",
+    organizationWorks: "Works",
+    organizationCollections: "Collections",
+    organizationUnassigned: "Unassigned",
+    organizationReview: "Review needed",
+    organizationFiles: "{count} files",
+    organizationCurrent: "Current work",
+    organizationPreviously: "Previously",
+    organizationMembershipChanged: "Files regrouped",
+    organizationOrderChanged: "Order changed",
+    organizationManualChanged: "Changes manual edits",
+    organizationApply: "Apply organization",
+    organizationApplyBody:
+      "The selected works will be regrouped in your library. Playback progress is preserved. Source files will not be moved, renamed or deleted. Unselected suggestions stay unchanged.",
+    organizationApplied: "Organized {count} works",
+    organizationScanning: "Reading folders",
+    organizationGrouping: "Analyzing library structure",
+    organizationValidating: "Checking and completing the plan",
+    organizationReviewing: "Reviewing identities and relationships",
+    organizationCollecting: "Reconciling the full library",
+    organizationAnalyzingFiles: "{count} video files",
+    organizationBusy: "Finish or cancel the current organization first.",
+    organizationIncomplete:
+      "Some folders could not be read. Check the storage connection and try again.",
+    organizationTooLarge:
+      "This scope is too large. Select fewer folders or reduce their scan depth.",
+    organizationEmpty: "No eligible video files in these folders.",
+    organizationInvalid:
+      "The AI returned an incomplete or invalid grouping. Nothing was applied. Try again.",
+    organizationStale:
+      "The library changed while this plan was open. Generate a new plan before applying it.",
+    organizationExpired: "This plan expired. Generate a new one.",
+    organizationNoCollections: "No collection suggestions",
+    organizationNoUnassigned: "All files have a suggested work",
+    organizationNoGroups: "No work suggestions",
+    organizationRegenerate: "Start again",
+    organizationChooseFolders: "Choose at least one registered folder.",
+    organizationNewWork: "Not yet in library",
+    organizationDetails: "Show files",
+    organizationSearchHelp:
+      "Optional. Helps verify ambiguous titles and relationships; organizing filenames does not require web search.",
+  },
+  zh: {
+    smartOrganize: "智能整理",
+    organizationFeedback: "确认与补充意见",
+    organizationNoSeries: "暂无系列建议",
+    organizationUnselectedMembers: "请先在作品页审阅并勾选以下成员：{names}",
+    organizationFlaggedCount: "已标记待确认 · {count}",
+    organizationReviewMeaning:
+      "列出全部 AI 标记的疑点、关系改名和未归组文件。未标记不代表已经完成事实核验；结构校验通过也不代表内容归属一定正确。",
+    organizationFeedbackLabel: "你的判断或调整意见",
+    organizationFeedbackPlaceholder: "说明哪些需要保留、调整或进一步核实。",
+    organizationNoQuestions: "当前没有待确认项。你仍可对当前方案提出调整意见。",
+    organizationInspectPlan: "查看方案",
+    organizationRefine: "修订方案",
+    organizationRefining: "正在修订",
+    organizationFeedbackLimit: "本轮累计意见过长，请汇总判断后重新生成方案。",
+
+    organizationScope: "整理范围",
+    organizationScopeHelp:
+      "按已注册目录的扫描层级读取。目录结构、文件名、已有片库信息、顺序和合集会发送给所选 AI 连接；跳过已移出的内容，不发送视频本身。",
+    organizationPreferences: "整理偏好",
+    organizationPreferencesPlaceholder:
+      "例如：每一季独立成作品，相关作品归入同一系列。",
+    organizationGenerate: "生成方案",
+    organizationWorks: "作品",
+    organizationCollections: "合集",
+    organizationUnassigned: "未归组",
+    organizationReview: "待确认",
+    organizationFiles: "{count} 个文件",
+    organizationCurrent: "当前作品",
+    organizationPreviously: "原名称",
+    organizationMembershipChanged: "归属调整",
+    organizationOrderChanged: "顺序调整",
+    organizationManualChanged: "涉及手动修改",
+    organizationApply: "应用整理",
+    organizationApplyBody:
+      "将按选中的方案更新片库分组，保留播放进度。源文件不会移动、重命名或删除；未选中的建议保持原状。",
+    organizationApplied: "已整理 {count} 个作品",
+    organizationScanning: "读取目录",
+    organizationGrouping: "整体分析片库结构",
+    organizationValidating: "校验并补全方案",
+    organizationReviewing: "复核作品与合集关系",
+    organizationCollecting: "汇总整体整理方案",
+    organizationAnalyzingFiles: "{count} 个视频文件",
+    organizationBusy: "请先完成或取消当前整理。",
+    organizationIncomplete: "部分目录读取失败，请检查存储连接后重试。",
+    organizationTooLarge: "本次范围过大，请减少所选目录或降低扫描层级。",
+    organizationEmpty: "所选目录中没有可整理的视频。",
+    organizationInvalid:
+      "AI 返回的归组不完整或无效，尚未应用任何改动，请重试。",
+    organizationStale: "片库在预览期间发生了变化，请重新生成方案后再应用。",
+    organizationExpired: "方案已过期，请重新生成。",
+    organizationNoCollections: "暂无合集建议",
+    organizationNoUnassigned: "所有文件均已有归组建议",
+    organizationNoGroups: "暂无作品建议",
+    organizationRegenerate: "重新整理",
+    organizationChooseFolders: "请至少选择一个已注册目录。",
+    organizationNewWork: "尚未入库",
+    organizationDetails: "查看文件",
+    organizationSearchHelp:
+      "可选，用来核实难以判断的作品名称与关联；根据文件名整理不依赖联网搜索。",
+  },
+} as const;

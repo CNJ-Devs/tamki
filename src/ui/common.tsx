@@ -1,5 +1,7 @@
 import {
   useEffect,
+  useState,
+  type RefObject,
   useRef,
   type ReactNode,
   type ComponentProps,
@@ -9,6 +11,8 @@ import {
   MagnifyingGlassIcon,
   XIcon,
   CaretLeftIcon,
+  CaretRightIcon,
+  InfoIcon,
 } from "@phosphor-icons/react";
 import { Button } from "./components/ui/button";
 import {
@@ -88,6 +92,15 @@ export function IconButton({
     </Tip>
   );
 }
+export function HelpTip({ text }: { text: string }) {
+  return (
+    <Tip text={text}>
+      <Button variant="ghost" size="icon-xs" aria-label={text}>
+        <InfoIcon />
+      </Button>
+    </Tip>
+  );
+}
 export function TextTip({
   children,
   className,
@@ -141,9 +154,16 @@ export function Fade({
   children,
   className,
   horizontal,
+  scrollRef,
+  onEdges,
   ...props
-}: ComponentProps<"div"> & { horizontal?: boolean }) {
-  const ref = useRef<HTMLDivElement>(null);
+}: ComponentProps<"div"> & {
+  horizontal?: boolean;
+  scrollRef?: RefObject<HTMLDivElement | null>;
+  onEdges?: (edges: { start: boolean; end: boolean }) => void;
+}) {
+  const internalRef = useRef<HTMLDivElement>(null);
+  const ref = scrollRef || internalRef;
   useEffect(() => {
     const el = ref.current!;
     const update = () => {
@@ -151,6 +171,10 @@ export function Fade({
         ? el.scrollWidth - el.clientWidth
         : el.scrollHeight - el.clientHeight;
       const position = horizontal ? el.scrollLeft : el.scrollTop;
+      onEdges?.({
+        start: position > 1 && max > 1,
+        end: position < max - 1 && max > 1,
+      });
       el.style.setProperty(
         "--fade-start",
         position > 1 && max > 1 ? "16px" : "0px",
@@ -175,7 +199,7 @@ export function Fade({
       mo.disconnect();
       el.removeEventListener("scroll", update);
     };
-  }, [horizontal]);
+  }, [horizontal, onEdges, ref]);
   return (
     <div
       ref={ref}
@@ -183,6 +207,58 @@ export function Fade({
       {...props}
     >
       {children}
+    </div>
+  );
+}
+/** Shared single-row navigation: edge fades and page buttons only where content remains. */
+export function HorizontalScroll({
+  children,
+  className,
+  ...props
+}: ComponentProps<"div">) {
+  const t = useI18n();
+  const ref = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ start: false, end: false });
+  const onEdges = useRef((next: { start: boolean; end: boolean }) =>
+    setEdges((old) =>
+      old.start === next.start && old.end === next.end ? old : next,
+    ),
+  ).current;
+  const page = (direction: number) =>
+    ref.current?.scrollBy({
+      left: direction * Math.max(80, ref.current.clientWidth * 0.8),
+      behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "instant"
+        : "smooth",
+    });
+  return (
+    <div className={cn("horizontal-scroll", className)} {...props}>
+      <Fade
+        horizontal
+        scrollRef={ref}
+        onEdges={onEdges}
+        className="horizontal-scroll-items"
+      >
+        {children}
+      </Fade>
+      {edges.start && (
+        <IconButton
+          className="horizontal-scroll-previous"
+          label={t("scrollPrevious")}
+          onClick={() => page(-1)}
+        >
+          <CaretLeftIcon />
+        </IconButton>
+      )}
+      {edges.end && (
+        <IconButton
+          className="horizontal-scroll-next"
+          label={t("scrollNext")}
+          onClick={() => page(1)}
+        >
+          <CaretRightIcon />
+        </IconButton>
+      )}
     </div>
   );
 }
@@ -217,16 +293,25 @@ export function FormField({
   children,
   htmlFor,
   error,
+  help,
 }: {
   label: string;
   children: ReactNode;
   htmlFor?: string;
   error?: string;
+  help?: string;
 }) {
   return (
     <Field data-invalid={!!error}>
       <div className="field-heading">
-        <FieldLabel htmlFor={htmlFor}>{label}</FieldLabel>
+        {help ? (
+          <div className="field-title">
+            <FieldLabel htmlFor={htmlFor}>{label}</FieldLabel>
+            <HelpTip text={help} />
+          </div>
+        ) : (
+          <FieldLabel htmlFor={htmlFor}>{label}</FieldLabel>
+        )}
         <span className="field-error" role="status">
           {error}
         </span>

@@ -19,6 +19,7 @@ interface Recognizer {
 export class AutomaticRecognition {
   private task?: Promise<void>;
   private stopped = false;
+  private suspended = false;
   private job?: string;
   private timer?: ReturnType<typeof setTimeout>;
   private wake?: () => void;
@@ -39,7 +40,7 @@ export class AutomaticRecognition {
     this.schedule();
   }
   schedule(retryIds: string[] = []) {
-    if (this.stopped) return;
+    if (this.stopped || this.suspended) return;
     const config = this.settings.snapshot().recognition;
     if (config.automatic === false) {
       if (this.job) this.recognizer.cancel(this.job);
@@ -55,6 +56,7 @@ export class AutomaticRecognition {
   private async drain() {
     while (
       !this.stopped &&
+      !this.suspended &&
       this.settings.snapshot().recognition.automatic !== false
     ) {
       const work = this.store
@@ -113,13 +115,17 @@ export class AutomaticRecognition {
         }
         if (
           this.stopped ||
+          this.suspended ||
           this.settings.snapshot().recognition.automatic === false
         ) {
           this.finish(work, { ...state, status: "queued" });
           return;
         }
         if (response.kind === "candidates")
-          this.finish(work, { ...state, status: "needs-choice" });
+          this.finish(work, {
+            ...state,
+            status: response.candidates.length ? "needs-choice" : "no-match",
+          });
         else
           this.store.applyAutomatic(work, response.result, {
             ...state,
@@ -131,14 +137,16 @@ export class AutomaticRecognition {
                     response.result.work?.tags?.length ||
                     response.result.files.some((f) => f.title || f.description)
                   ? "complete"
-                  : "needs-choice",
+                  : "no-match",
             artworkError: response.artworkError,
+            artworkSource: response.artworkSource,
           });
       } catch (error) {
         const code =
           error instanceof Error ? error.message : "recognitionFailed";
         const cancelled =
           this.stopped ||
+          this.suspended ||
           this.settings.snapshot().recognition.automatic === false;
         this.finish(work, {
           ...state,
@@ -165,6 +173,17 @@ export class AutomaticRecognition {
       current?.recognition?.status === "running"
     )
       this.store.setRecognition(work.id, next);
+  }
+  async pause() {
+    this.suspended = true;
+    if (this.job) this.recognizer.cancel(this.job);
+    clearTimeout(this.timer);
+    this.wake?.();
+    await this.task;
+  }
+  resume() {
+    this.suspended = false;
+    this.schedule();
   }
   async close() {
     this.stopped = true;

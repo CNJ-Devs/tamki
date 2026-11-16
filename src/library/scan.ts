@@ -53,6 +53,7 @@ export async function scanScopes(
   provider: StorageProvider,
   scopes: ScanScope[],
   signal?: AbortSignal,
+  limits?: { files: number; directories: number },
 ): Promise<ScanResult> {
   for (const scope of scopes)
     if (!Number.isInteger(scope.depth) || scope.depth < 0 || scope.depth > 32)
@@ -67,6 +68,7 @@ export async function scanScopes(
   const listings = new Map<string, Entry[]>(),
     visited = new Set<string>();
   let frontier = [...new Set(scopes.map((s) => s.root))];
+  let fileCount = 0;
   while (frontier.length) {
     signal?.throwIfAborted();
     const batch = frontier.filter((dir) => !visited.has(dir));
@@ -77,6 +79,8 @@ export async function scanScopes(
         while (cursor < batch.length) {
           signal?.throwIfAborted();
           const directory = batch[cursor++];
+          if (limits && visited.size >= limits.directories)
+            throw new Error("organizationTooLarge");
           if (visited.size >= 10000) {
             result.failures.push(directory);
             continue;
@@ -95,6 +99,9 @@ export async function scanScopes(
             )
               throw new Error("invalidListing");
             const children = entries;
+            fileCount += children.filter(isVideo).length;
+            if (limits && fileCount > limits.files)
+              throw new Error("organizationTooLarge");
             listings.set(directory, children);
             result.completeDirectories.push(directory);
             result.children![directory] = children
@@ -110,7 +117,12 @@ export async function scanScopes(
               )
                 frontier.push(entry.path);
             }
-          } catch {
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              error.message === "organizationTooLarge"
+            )
+              throw error;
             signal?.throwIfAborted();
             result.failures.push(directory);
           }

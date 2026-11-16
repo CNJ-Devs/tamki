@@ -1,4 +1,20 @@
-import { app, dialog, protocol, net, shell as systemShell } from "electron";
+import { ThumbnailCache, thumbnailKey } from "./thumbnails";
+import { providerArtworkFetch } from "./artwork-fetch";
+import {
+  observedFetch,
+  traced,
+  logEvent,
+  diagnosticError,
+} from "../diagnostics";
+import {
+  app,
+  dialog,
+  protocol,
+  net,
+  safeStorage,
+  clipboard,
+  shell as systemShell,
+} from "electron";
 import { realpath, readdir, stat } from "node:fs/promises";
 import { randomUUID, randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -22,17 +38,27 @@ import {
 } from "../providers/provider";
 import {
   collectionSchema,
+  seriesSchema,
   connectionSchema,
   editSchema,
   id,
   location,
   preferencesSchema,
   progressSchema,
+  mediaSelectionSchema,
 } from "../shared/validation";
 import type { Connection, Entry } from "../shared/model";
 import { mediaType, parseRange } from "./range";
 import { SettingsService } from "./settings";
-import { saveRuleSchema, targetSchema } from "../shared/settings";
+import {
+  downloadLimitsSchema,
+  saveRuleSchema,
+  targetSchema,
+} from "../shared/settings";
+import { OrganizationService } from "./organization";
+import { organizeRequestSchema } from "../shared/organization";
+import { CaptureStorage } from "../capture/storage";
+import type { VideoDownloadJob, VideoDownloadItem } from "../shared/capture";
 
 interface Draft {
   id: string;
@@ -47,8 +73,16 @@ export class LibraryService {
   readonly recognition: RecognitionService;
   readonly automatic: AutomaticRecognition;
   readonly artwork: ArtworkCache;
+  readonly thumbnails: ThumbnailCache;
+  readonly organization: OrganizationService;
+  readonly downloadStorage: CaptureStorage;
+  private organizing = false;
+  private organizationTask?: Promise<unknown>;
+  private organizationRequest?: { id: string; cancelled: boolean };
   private refreshing = false;
   private refreshTask?: Promise<void>;
+  private artworkTask?: Promise<void>;
+  private artworkAgain = false;
   private controller = new AbortController();
   private drafts = new Map<string, Draft>();
   private cli?: ZSpaceCLI;
@@ -58,10 +92,19 @@ export class LibraryService {
       path.join(app.getPath("userData"), "library.sqlite"),
       app.getLocale().startsWith("zh") ? "zh" : "en",
     );
-    this.settings = new SettingsService(this.store);
+    this.settings = new SettingsService(this.store, {
+      request: observedFetch(net.fetch.bind(net) as typeof fetch),
+      openBrowser: (url) => systemShell.openExternal(url),
+      writeClipboard: (value) => clipboard.writeText(value),
+      secureStorage: safeStorage,
+      runtimeRoot: path.join(app.getPath("userData"), "source-runtimes"),
+    });
+    this.thumbnails = new ThumbnailCache(
+      path.join(app.getPath("userData"), "thumbnails"),
+    );
     this.artwork = new ArtworkCache(
       path.join(app.getPath("userData"), "artwork"),
-      net.fetch.bind(net) as typeof fetch,
+      observedFetch(providerArtworkFetch(net.fetch.bind(net) as typeof fetch)),
     );
     this.recognition = new RecognitionService(
       this.store,
@@ -74,9 +117,240 @@ export class LibraryService {
       this.recognition,
       emit,
     );
+    this.organization = new OrganizationService(
+      this.store,
+      this.settings,
+      (c) => this.provider(c),
+      () => this.automatic.resume(),
+    );
+    this.downloadStorage = new CaptureStorage({
+      connection: (id) => this.store.connection(id),
+      provider: (connection) => this.provider(connection),
+      upload: async (id, args, signal) =>
+        (await this.runtime()).runner(id, 2 * 60 * 60 * 1000)(args, signal),
+    });
   }
   snapshot() {
-    return this.store.snapshot(this.refreshing);
+    return {
+      ...this.store.snapshot(this.refreshing),
+      settings: this.settings.snapshot(),
+      videoDownloads: this.store.downloadJobs(),
+    };
+  }
+  repairMissingArtwork(): Promise<void> {
+    this.artworkAgain = true;
+    if (this.artworkTask) return this.artworkTask;
+    this.artworkTask = (async () => {
+      const attempted = new Set<string>();
+      do {
+        this.artworkAgain = false;
+        await this.repairArtworkPass(attempted);
+      } while (this.artworkAgain && !this.controller.signal.aborted);
+    })().finally(() => {
+      this.artworkTask = undefined;
+    });
+    return this.artworkTask;
+  }
+  private async repairArtworkPass(attempted: Set<string>) {
+    const captured = async (id: string, source: string, episode = false) => {
+      if (this.controller.signal.aborted) return;
+      try {
+        // Several new versions can share artwork; the cache handles successful
+        // repeats, while a failed address is attempted only once per pass queue.
+        if (attempted.has(source)) {
+          if (episode) {
+            this.store.failCapturedEpisodeArtwork(id, source);
+            this.emit();
+          }
+          return;
+        }
+        const key = await this.artwork.cache(source, this.controller.signal);
+        if (!this.controller.signal.aborted) {
+          this.store.repairCapturedArtwork(id, source, key, episode);
+          this.emit();
+        }
+      } catch (error) {
+        attempted.add(source);
+        if (episode && !this.controller.signal.aborted) {
+          this.store.failCapturedEpisodeArtwork(id, source);
+          this.emit();
+        }
+        if (!this.controller.signal.aborted)
+          logEvent(
+            "artwork.capture.failed",
+            { ...diagnosticError(error) },
+            "warn",
+          );
+      }
+    };
+    for (const work of this.store.snapshot().works) {
+      if (this.controller.signal.aborted) return;
+      if (!work.cover && work.captureSource?.cover)
+        await captured(work.id, work.captureSource.cover);
+      const recognition = work.recognition;
+      if (
+        work.cover ||
+        !recognition?.artworkError ||
+        recognition.status !== "complete"
+      )
+        continue;
+      try {
+        let source = recognition.artworkSource;
+        // Older records did not retain artwork URLs. Recover the known subject,
+        // without repeating recognition or sending a new LLM request.
+        if (
+          !source &&
+          recognition.sourceId === "bangumi" &&
+          /^bangumi:\d+$/.test(recognition.candidate || "")
+        ) {
+          const response = await net.fetch(
+            `https://api.bgm.tv/v0/subjects/${recognition.candidate!.split(":")[1]}`,
+            {
+              credentials: "omit",
+              signal: AbortSignal.any([
+                this.controller.signal,
+                AbortSignal.timeout(15000),
+              ]),
+            },
+          );
+          if (!response.ok) continue;
+          const metadata = (await response.json()) as {
+            images?: { large?: string };
+          };
+          if (metadata.images?.large)
+            source = { cover: metadata.images.large, coverPage: null };
+        }
+        if (!source) continue;
+        const key = await this.artwork.resolve(
+          source.cover,
+          source.coverPage,
+          this.controller.signal,
+        );
+        if (this.controller.signal.aborted) return;
+        this.store.repairArtwork(work.id, recognition.signature, key);
+        this.emit();
+        logEvent("artwork.repair.done", { workId: work.id });
+      } catch (error) {
+        if (this.controller.signal.aborted) return;
+        logEvent(
+          "artwork.repair.failed",
+          { workId: work.id, ...diagnosticError(error) },
+          "warn",
+        );
+      }
+    }
+    for (const work of this.store.snapshot().works)
+      for (const episode of work.episodes)
+        if (!episode.cover && episode.artworkSource)
+          await captured(episode.id, episode.artworkSource, true);
+  }
+  async completeDownload(job: VideoDownloadJob, item: VideoDownloadItem) {
+    if (!item.path) return;
+    const group = job.groups?.find((g) => g.id === item.groupId);
+    const target = group?.target || job.target;
+    const connection = this.store.connection(target.connectionId);
+    const provider = await this.provider(connection);
+    const entries = await provider.list(target.path);
+    const files = entries.filter(
+      (e) =>
+        !e.directory &&
+        job.items.some((i) => i.path === e.path && i.state === "completed"),
+    );
+    const file = files.find((e) => e.path === item.path);
+    if (!file) throw new ProviderError("mediaMissing");
+    const root =
+      connection.roots.find((r) =>
+        connection.type === "local"
+          ? containsPath(r, item.path!)
+          : containsRemote(r, item.path!),
+      ) || target.path;
+    const matchingWorks = this.store
+      .snapshot()
+      .works.filter(
+        (w) => w.connectionId === connection.id && w.path === target.path,
+      );
+    const existingWork =
+      matchingWorks.length === 1 ? matchingWorks[0] : undefined;
+    this.store.applyScan(
+      connection.id,
+      root,
+      {
+        groups: [
+          {
+            path: job.series || existingWork ? target.path : item.path,
+            name: existingWork?.title || group?.title || job.name,
+            files: job.series ? files : [file],
+          },
+        ],
+        completeDirectories: [],
+        failures: [],
+      },
+      true,
+    );
+    this.store.linkDownloadedVersions(
+      connection.id,
+      job.items
+        .filter(
+          (other) =>
+            other.path &&
+            other.resource.provider === item.resource.provider &&
+            other.resource.aid === item.resource.aid &&
+            other.resource.cid === item.resource.cid,
+        )
+        .map((other) => ({
+          path: other.path!,
+          label: other.qualityLabel || "",
+          releaseKey: other.quality ? `bilibili:${other.quality}` : "",
+        })),
+    );
+    this.store.applyCapturedMetadata(
+      connection.id,
+      item.path,
+      group?.metadata || job.metadata,
+      item.resource.metadata,
+      existingWork ? undefined : group?.title || job.name,
+    );
+    const episode = this.store
+      .snapshot()
+      .works.flatMap((w) => w.episodes)
+      .find((e) =>
+        e.versions?.some((v) =>
+          v.files.some(
+            (f) => f.connectionId === connection.id && f.path === item.path,
+          ),
+        ),
+      );
+    if (episode && item.resource.duration)
+      this.store.setProgress(episode.id, 0, item.resource.duration, false);
+    if (job.groups && !job.librarySeriesCreated) {
+      const state = this.store.snapshot();
+      const members = job.groups.map((g) =>
+        state.works.find(
+          (w) =>
+            w.connectionId === g.target.connectionId &&
+            w.path === g.target.path,
+        ),
+      );
+      if (
+        members.every(Boolean) &&
+        !state.series?.some((s) =>
+          s.workIds.some((id) => members.some((w) => w?.id === id)),
+        )
+      ) {
+        this.store.saveSeries({
+          id: job.id,
+          name: job.name,
+          workIds: members.map((w) => w!.id),
+        });
+        job.librarySeriesCreated = true;
+      }
+    }
+    this.emit();
+    void this.repairMissingArtwork().catch((error) =>
+      logEvent("artwork.capture.failed", diagnosticError(error), "warn"),
+    );
+    this.automatic.schedule();
+    return episode?.id;
   }
   private async selectedFiles(
     connectionId: string,
@@ -144,6 +418,9 @@ export class LibraryService {
     this.cli = new ZSpaceCLI(
       executable,
       path.join(app.getPath("userData"), "zspace"),
+      (id) =>
+        this.store.snapshot().connections.find((c) => c.id === id)
+          ?.allowLANHTTP === true,
     );
     return this.cli;
   }
@@ -158,10 +435,12 @@ export class LibraryService {
         );
   }
   refresh() {
+    if (this.organizing || this.organization.busy)
+      return Promise.reject(new ProviderError("organizationBusy"));
     if (this.refreshTask) return this.refreshTask;
     this.refreshing = true;
     this.emit();
-    this.refreshTask = (async () => {
+    this.refreshTask = traced("library.scan", {}, async () => {
       for (const connection of this.store.connections()) {
         if (this.controller.signal.aborted) break;
         this.store.saveConnection({
@@ -171,6 +450,11 @@ export class LibraryService {
         });
         this.emit();
         let failed = false;
+        logEvent("library.scan-source", {
+          provider: connection.type,
+          connectionId: connection.id,
+          roots: connection.roots.length,
+        });
         try {
           const provider = await this.provider(connection);
           const result = await scanScopes(
@@ -184,13 +468,27 @@ export class LibraryService {
           this.store.applyScan(connection.id, connection.roots[0], result);
           this.automatic.schedule();
           failed = result.failures.length > 0;
+          logEvent(
+            "library.scan-source-result",
+            {
+              provider: connection.type,
+              connectionId: connection.id,
+              issues: result.failures.length,
+            },
+            failed ? "warn" : "info",
+          );
           this.store.saveConnection({
             ...connection,
             status: failed ? "offline" : "connected",
             error: failed ? "scanPartial" : null,
             scannedAt: failed ? connection.scannedAt : Date.now(),
           });
-        } catch {
+        } catch (error) {
+          logEvent(
+            "library.scan-source-failed",
+            { connectionId: connection.id, ...diagnosticError(error) },
+            "error",
+          );
           this.store.saveConnection({
             ...connection,
             status: "offline",
@@ -199,7 +497,7 @@ export class LibraryService {
         }
         this.emit();
       }
-    })().finally(() => {
+    }).finally(() => {
       this.refreshing = false;
       this.refreshTask = undefined;
       this.emit();
@@ -208,6 +506,77 @@ export class LibraryService {
   }
   async request(type: string, value: unknown): Promise<unknown> {
     switch (type) {
+      case "ai-feature-models":
+        try {
+          return await this.settings.featureModels(id.parse(value));
+        } finally {
+          this.emit();
+        }
+      case "organize-progress":
+        return this.organization.progress(value);
+      case "organize-cancel": {
+        const jobId = id.parse(value);
+        if (this.organizationRequest?.id === jobId)
+          this.organizationRequest.cancelled = true;
+        this.organization.cancel(jobId);
+        return;
+      }
+      case "organize": {
+        if (this.refreshing) throw new ProviderError("scanBusy");
+        if (this.organizing || this.organization.busy)
+          throw new ProviderError("organizationBusy");
+        const input = organizeRequestSchema.parse(value);
+        this.settings.featureRuntime(
+          input.connectionId,
+          input.model,
+          input.webSearch,
+        );
+        this.organizing = true;
+        const pending = { id: input.jobId, cancelled: false };
+        this.organizationRequest = pending;
+        this.organizationTask = (async () => {
+          try {
+            await this.automatic.pause();
+            if (pending.cancelled)
+              throw new ProviderError("recognitionCancelled");
+            const preferences = this.settings.snapshot();
+            preferences.organization = {
+              connectionId: input.connectionId,
+              model: input.model,
+              webSearch: input.webSearch,
+              instructions: input.instructions,
+            };
+            this.settings.save(preferences);
+            return await this.organization.run(input);
+          } catch (e) {
+            this.automatic.resume();
+            throw e;
+          } finally {
+            this.organizing = false;
+            this.organizationRequest = undefined;
+            this.organizationTask = undefined;
+            this.emit();
+          }
+        })();
+        return this.organizationTask;
+      }
+      case "organize-refine": {
+        if (this.refreshing) throw new ProviderError("scanBusy");
+        if (this.organizing) throw new ProviderError("organizationBusy");
+        this.organizing = true;
+        this.organizationTask = this.organization.refine(value).finally(() => {
+          this.organizing = false;
+          this.organizationTask = undefined;
+          this.emit();
+        });
+        return this.organizationTask;
+      }
+      case "organize-apply":
+        try {
+          return this.organization.apply(value);
+        } finally {
+          this.emit();
+        }
       case "recognize":
         return this.recognition.run(value, async (input) => {
           const additions = [];
@@ -239,7 +608,7 @@ export class LibraryService {
             .filter((w) =>
               workId
                 ? w.id === workId
-                : ["failed", "needs-choice", "local"].includes(
+                : ["failed", "needs-choice", "no-match", "local"].includes(
                     w.recognition?.status || "",
                   ) || w.recognition?.artworkError,
             )
@@ -259,15 +628,64 @@ export class LibraryService {
         await systemShell.openExternal(url);
         return true;
       }
+      case "source-authorization":
+      case "source-authorization-open":
+      case "source-authorization-copy":
+      case "source-authorization-cancel":
+        return this.settings.request(type, value);
       case "tmdb-credentials":
       case "recognition-preferences":
       case "source-models":
+      case "recognition-source-models":
+      case "recognition-source-search":
+      case "save-recognition-source":
+      case "ai-connection-login":
+      case "ai-connection-projects":
+      case "ai-connection-test":
+      case "ai-connection-save":
+      case "ai-connection-remove":
+      case "ai-connection-logout":
+      case "ai-connection-discard":
+      case "source-account-login":
+      case "source-account-status":
+      case "source-account-projects":
+      case "source-account-search":
+      case "source-account-logout":
+      case "source-account-discard":
+      case "source-oauth-login":
+      case "source-oauth-profiles":
+      case "source-oauth-select":
+      case "source-oauth-logout":
+      case "source-oauth-cancel":
+      case "source-oauth-discard":
+      case "source-oauth-search":
+      case "source-oauth-welcome":
       case "save-source":
       case "remove-source": {
-        const result = await this.settings.request(type, value);
-        if (type !== "source-models") this.automatic.schedule();
+        try {
+          const result = await this.settings.request(type, value);
+          if (
+            [
+              "save-source",
+              "save-recognition-source",
+              "remove-source",
+              "recognition-preferences",
+              "tmdb-credentials",
+            ].includes(type)
+          )
+            this.automatic.schedule();
+          return result;
+        } finally {
+          this.emit();
+        }
+      }
+      case "download-limits": {
+        const limits = downloadLimitsSchema.parse(value);
+        const settings = this.settings.snapshot();
+        settings.downloadLimits = limits;
+        this.settings.save(settings);
         this.emit();
-        return result;
+        return;
       }
       case "save-preference": {
         const input = z
@@ -480,6 +898,7 @@ export class LibraryService {
         this.store.saveConnection({
           id: previous?.id || source.id,
           name: input.name,
+          allowLANHTTP: input.allowLANHTTP ?? previous?.allowLANHTTP ?? false,
           type: source.type,
           roots: normalized,
           scanDepths: Object.fromEntries(
@@ -606,6 +1025,12 @@ export class LibraryService {
       case "reorder":
         this.store.reorder(z.array(id).max(100000).parse(value));
         break;
+      case "save-series":
+        this.store.saveSeries(seriesSchema.parse(value));
+        break;
+      case "remove-series":
+        this.store.removeSeries(id.parse(value));
+        break;
       case "save-collection":
         this.store.saveCollection(collectionSchema.parse(value));
         break;
@@ -619,14 +1044,57 @@ export class LibraryService {
           input.position,
           input.duration,
           input.resume,
+          input.versionId,
+          input.fileId,
         );
         break;
       }
       case "media": {
-        const episode = this.store.episode(id.parse(value));
+        const input = mediaSelectionSchema.parse(
+          typeof value === "string" ? { id: value } : value,
+        );
+        const episode = this.store.media(
+          input.id,
+          input.versionId,
+          input.fileId,
+        );
         if (episode.missing) throw new ProviderError("mediaMissing");
         this.store.connection(episode.connectionId);
         return `tamki-media://video/${episode.id}?ticket=${this.ticket}`;
+      }
+      case "select-version": {
+        const input = mediaSelectionSchema
+          .required({ versionId: true })
+          .parse(value);
+        this.store.selectVersion(input.id, input.versionId);
+        break;
+      }
+      case "thumbnail":
+      case "thumbnail-save": {
+        const input = (
+          type === "thumbnail-save"
+            ? mediaSelectionSchema
+                .extend({
+                  key: z.string().regex(/^[a-f0-9]{64}$/),
+                  data: z.string().max(700000),
+                })
+                .strict()
+            : mediaSelectionSchema
+        ).parse(value);
+        const file = this.store.media(input.id, input.versionId, input.fileId);
+        const key = thumbnailKey(file);
+        if (type === "thumbnail-save") {
+          const saved = input as typeof input & { key: string; data: string };
+          if (saved.key !== key) throw new ProviderError("mediaMissing");
+          await this.thumbnails.save(key, saved.data);
+        }
+        const cached = await this.thumbnails.read(key).catch(() => null);
+        return {
+          key,
+          url: cached
+            ? `tamki-media://thumbnail/${key}?ticket=${this.ticket}`
+            : null,
+        };
       }
       case "cover": {
         const key = z
@@ -647,13 +1115,15 @@ export class LibraryService {
       try {
         const url = new URL(request.url);
         if (
-          !["video", "cover"].includes(url.hostname) ||
+          !["video", "cover", "thumbnail"].includes(url.hostname) ||
           url.searchParams.get("ticket") !== this.ticket ||
           !["GET", "HEAD"].includes(request.method)
         )
           return new Response(null, { status: 403 });
-        if (url.hostname === "cover") {
-          const cover = await this.artwork.read(url.pathname.slice(1));
+        if (url.hostname === "cover" || url.hostname === "thumbnail") {
+          const cover = await (
+            url.hostname === "cover" ? this.artwork : this.thumbnails
+          ).read(url.pathname.slice(1));
           return new Response(
             request.method === "HEAD" ? null : new Uint8Array(cover.data),
             {
@@ -667,7 +1137,7 @@ export class LibraryService {
             },
           );
         }
-        const episode = this.store.episode(id.parse(url.pathname.slice(1)));
+        const episode = this.store.file(id.parse(url.pathname.slice(1)));
         if (episode.missing) return new Response(null, { status: 404 });
         const connection = this.store.connection(episode.connectionId);
         const provider = await this.provider(connection);
@@ -752,11 +1222,16 @@ export class LibraryService {
     });
   }
   async close() {
+    if (this.organizationRequest) this.organizationRequest.cancelled = true;
+    this.organization.close();
+    this.settings.close();
     await this.automatic.close();
     this.recognition.close();
     this.controller.abort();
     this.cli?.close();
     await this.refreshTask;
+    await this.organizationTask?.catch(() => {});
+    await this.artworkTask?.catch(() => {});
     this.store.close();
   }
 }

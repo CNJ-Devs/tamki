@@ -210,7 +210,11 @@ test("AI adapters send protocol-specific requests, validate output and sanitize 
         input,
         defaultPrompts.en,
         signal(),
-        (async () => Response.json({ status: "incomplete" })) as typeof fetch,
+        (async () =>
+          Response.json({
+            status: "incomplete",
+            incomplete_details: { reason: "max_output_tokens" },
+          })) as typeof fetch,
       ),
     /recognitionTruncated/,
   );

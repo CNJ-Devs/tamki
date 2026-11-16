@@ -30,10 +30,31 @@ export const providers = [
     auth: "bearer",
   },
   {
+    id: "openai-oauth",
+    name: "OpenAI · ChatGPT",
+    endpoint: "https://api.openai.com/v1",
+    protocol: "responses",
+    auth: "bearer",
+  },
+  {
     id: "openai-compatible",
     name: "OpenAI Compatible",
     endpoint: "",
     protocol: "chat-completions",
+    auth: "bearer",
+  },
+  {
+    id: "claude-code",
+    name: "Claude Code",
+    endpoint: "",
+    protocol: "claude-code",
+    auth: "none",
+  },
+  {
+    id: "gemini-oauth",
+    name: "Gemini · Google Cloud",
+    endpoint: "https://generativelanguage.googleapis.com",
+    protocol: "gemini-generate-content",
     auth: "bearer",
   },
 ] as const;
@@ -84,16 +105,20 @@ export const sourceSchema = z
       "anthropic",
       "gemini",
       "openai",
+      "openai-oauth",
       "openai-compatible",
+      "claude-code",
+      "gemini-oauth",
     ]),
     protocol: z.enum([
       "chat-completions",
       "responses",
       "anthropic-messages",
       "gemini-generate-content",
+      "claude-code",
     ]),
     endpoint: z.string().max(2048),
-    auth: z.enum(["bearer", "x-api-key", "none"]),
+    auth: z.enum(["bearer", "x-api-key", "x-goog-api-key", "none"]),
     model: z.string().max(200),
     searchMode: z.enum(["none", "native", "external"]),
     searchEndpoint: endpointSchema,
@@ -122,6 +147,12 @@ export const sourceSchema = z
       .string()
       .max(200)
       .regex(/^[\w-]*$/),
+    oauthClientId: z.string().max(256).default(""),
+    runtimePath: z
+      .string()
+      .max(4096)
+      .refine((v) => !/[\r\n\0]/.test(v))
+      .default(""),
   })
   .strict()
   .superRefine((source, ctx) => {
@@ -140,23 +171,70 @@ export const sourceSchema = z
       if (source.searchMode === "external") fail("searchMode");
     }
     if (source.domainMode !== "all" && !source.domains.length) fail("domains");
+    if (source.provider === "openai-oauth") {
+      if (source.auth !== "bearer") fail("auth");
+      if (source.project) fail("project");
+      if (source.organization) fail("organization");
+    }
+    if (source.provider === "gemini-oauth") {
+      if (
+        source.oauthClientId &&
+        !/^[\w-]+\.apps\.googleusercontent\.com$/.test(source.oauthClientId)
+      )
+        fail("oauthClientId");
+      if (
+        source.project &&
+        !/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(source.project)
+      )
+        fail("project");
+      if (source.auth !== "bearer" || source.organization) fail("auth");
+    } else if (source.oauthClientId) fail("oauthClientId");
+    if (source.provider !== "claude-code" && source.runtimePath)
+      fail("runtimePath");
   });
 export type SourceConfig = z.infer<typeof sourceSchema>;
 export interface ModelOption {
   id: string;
   name: string;
   outputLimit?: number;
+  contextWindow?: number;
+  inputLimit?: number;
+  defaultReasoning?: string;
 }
 export interface CustomSource extends SourceConfig {
+  connectionId?: string;
   hasKey: boolean;
   hasSearchKey: boolean;
   models: ModelOption[];
+  account?: OAuthAccount;
+}
+export interface OAuthAccount {
+  email: string;
+  status: "connected" | "signedOut" | "planRequired";
+  search?: { model: string; settingsKey: string; checkedAt: number };
+  billing?: "subscription" | "api";
+}
+export function usesAccount(provider: SourceConfig["provider"]): boolean {
+  return ["openai-oauth", "gemini-oauth", "claude-code"].includes(provider);
+}
+export function searchSettingsKey(source: SourceConfig): string {
+  return JSON.stringify([
+    source.model,
+    source.searchMode,
+    source.liveAccess,
+    source.domainMode,
+    source.domains,
+    source.country,
+    source.project,
+    source.readPages,
+  ]);
 }
 export const sourceInputSchema = z
   .object({
     source: sourceSchema,
     apiKey: key.optional(),
     searchKey: key.optional(),
+    oauthClientSecret: key.optional(),
   })
   .strict();
 export function newSource(
@@ -185,6 +263,8 @@ export function newSource(
     maxOutputTokens: 32768,
     project: "",
     organization: "",
+    oauthClientId: "",
+    runtimePath: "",
   };
 }
 export const targetSchema = z
@@ -206,7 +286,28 @@ export const saveRuleSchema = z
   })
   .strict();
 export type SaveRule = z.infer<typeof saveRuleSchema>;
+export const downloadLimitsSchema = z
+  .object({
+    downloads: z.number().int().min(1).max(6),
+    saves: z.number().int().min(1).max(3),
+    cacheGiB: z.number().int().min(5).max(100),
+  })
+  .strict();
+export type DownloadLimits = z.infer<typeof downloadLimitsSchema>;
+export const defaultDownloadLimits: DownloadLimits = {
+  downloads: 3,
+  saves: 2,
+  cacheGiB: 20,
+};
 export interface SettingsState {
+  downloadLimits?: DownloadLimits;
+  organization?: {
+    connectionId: string;
+    model: string;
+    webSearch: boolean;
+    instructions: string;
+  };
+  aiConnections: import("./ai-connections").AIConnection[];
   downloads: Record<"series" | "video", SaveRule>;
   recognition: {
     automatic?: boolean;
@@ -219,6 +320,7 @@ export interface SettingsState {
 }
 export function defaultSettings(language: "en" | "zh"): SettingsState {
   return {
+    aiConnections: [],
     downloads: {
       series: { mode: "last", fixed: null, last: null },
       video: { mode: "last", fixed: null, last: null },
@@ -233,6 +335,7 @@ export function defaultSettings(language: "en" | "zh"): SettingsState {
   };
 }
 export function sourceConfig(source: CustomSource): SourceConfig {
-  const { hasKey, hasSearchKey, models, ...config } = source;
+  const { hasKey, hasSearchKey, models, account, connectionId, ...config } =
+    source;
   return config;
 }

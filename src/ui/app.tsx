@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { Tasks } from "./tasks";
 import { Toaster, toast } from "sonner";
 import {
   HouseIcon,
+  ClockCounterClockwiseIcon,
+  DownloadSimpleIcon,
   GlobeIcon,
   PlayCircleIcon,
   PlusIcon,
@@ -36,8 +39,16 @@ function App() {
   useLibraryDurations(state);
   useEffect(() => {
     const off = window.tamki.onLibrary(setState);
+    const offDownloads = window.tamki.onDownloads((videoDownloads) =>
+      setState((previous) =>
+        previous ? { ...previous, videoDownloads } : previous,
+      ),
+    );
     void window.tamki.library("state").then(setState);
-    return off;
+    return () => {
+      off();
+      offDownloads();
+    };
   }, []);
   useEffect(() => {
     if (!state) return;
@@ -97,6 +108,16 @@ function Shell({ state }: { state: LibraryState }) {
   );
   useEffect(() => {
     const off = window.tamki.onState(setBrowser);
+    const offPage = window.tamki.onOpenPage(setPage);
+    const offPlayDownload = window.tamki.onPlayDownload(
+      ({ workId, episodeId }) => {
+        setRequests((old) => ({
+          ...old,
+          [workId]: { id: episodeId, nonce: Date.now() },
+        }));
+        void act("play", workId);
+      },
+    );
     void window.tamki.action("state").then(setBrowser);
     const focus = window.tamki.onFocusAddress(() => {
       requestAnimationFrame(() => {
@@ -109,6 +130,8 @@ function Shell({ state }: { state: LibraryState }) {
     );
     return () => {
       off();
+      offPage();
+      offPlayDownload();
       focus();
       focusTabs();
     };
@@ -127,7 +150,7 @@ function Shell({ state }: { state: LibraryState }) {
         32,
         Math.min(
           202,
-          (el.clientWidth - (window.tamki.platform === "darwin" ? 220 : 100)) /
+          (el.clientWidth - (window.tamki.platform === "darwin" ? 284 : 164)) /
             Math.max(1, browser.tabs.length),
         ),
       );
@@ -163,7 +186,7 @@ function Shell({ state }: { state: LibraryState }) {
       onPointerDown={(event) => {
         if (
           browser.pickerOpen &&
-          !pickerTrigger.current?.contains(event.target as Node)
+          !(event.target as Element).closest(".browser-actions")
         )
           void act("tabs-dismiss");
       }}
@@ -224,17 +247,37 @@ function Shell({ state }: { state: LibraryState }) {
           <PlusIcon />
         </IconButton>
         <div className="tabstrip-space" />
-        <Button
-          ref={pickerTrigger}
-          variant="ghost"
-          size="icon"
-          aria-label={t("allTabs")}
-          aria-haspopup="dialog"
-          aria-expanded={browser.pickerOpen}
-          onClick={() => void act("tabs-open")}
-        >
-          <CaretDownIcon />
-        </Button>
+        <div className="browser-actions">
+          <Button
+            ref={pickerTrigger}
+            variant="ghost"
+            size="icon"
+            aria-label={t("allTabs")}
+            aria-haspopup="dialog"
+            aria-expanded={browser.pickerOpen && browser.pickerMode === "tabs"}
+            onClick={() => void act("tabs-open")}
+          >
+            <CaretDownIcon />
+          </Button>{" "}
+          <IconButton
+            label={t("browserHistory")}
+            aria-haspopup="dialog"
+            aria-expanded={
+              browser.pickerOpen && browser.pickerMode === "history"
+            }
+            onClick={() => void act("history-open")}
+          >
+            <ClockCounterClockwiseIcon />
+          </IconButton>
+          <IconButton
+            label={t("tasks")}
+            aria-haspopup="dialog"
+            aria-expanded={browser.pickerOpen && browser.pickerMode === "tasks"}
+            onClick={() => void act("tasks-open")}
+          >
+            <DownloadSimpleIcon />
+          </IconButton>
+        </div>
       </div>
       <main className={cn("content", browser.active === 0 && "home-active")}>
         <div className="home-content" hidden={browser.active !== 0}>
@@ -249,7 +292,11 @@ function Shell({ state }: { state: LibraryState }) {
           {page === "settings" ? (
             <Settings state={state} onBack={() => setPage("library")} />
           ) : page === "tasks" ? (
-            <Tasks state={state} onBack={() => setPage("library")} />
+            <Tasks
+              state={state}
+              onBack={() => setPage("library")}
+              play={play}
+            />
           ) : page === "edit" && work ? (
             <MetadataEditor
               key={work.id}
@@ -259,6 +306,8 @@ function Shell({ state }: { state: LibraryState }) {
             />
           ) : page === "detail" && work ? (
             <DetailPage
+              key={work.id}
+              onSelectWork={setWorkId}
               work={work}
               state={state}
               onBack={() => setPage("library")}
@@ -347,11 +396,30 @@ function Shell({ state }: { state: LibraryState }) {
         {browser.tabs
           .filter((tab) => tab.kind === "player")
           .map((tab) => {
-            const work = state.works.find((w) => w.id === tab.workId);
+            const work =
+              tab.onlineWork || state.works.find((w) => w.id === tab.workId);
             return work ? (
               <Player
                 key={tab.id}
+                online={!!tab.onlineWork}
                 work={work}
+                relatedWorks={
+                  tab.onlineWork
+                    ? []
+                    : (() => {
+                        const series = state.series?.find((s) =>
+                          s.workIds.includes(work.id),
+                        );
+                        return series
+                          ? series.workIds
+                              .map((id) =>
+                                state.works.find((w) => w.id === id)!,
+                              )
+                              .filter(Boolean)
+                          : [];
+                      })()
+                }
+                onWork={(id) => void act("play", id)}
                 active={browser.active === tab.id}
                 requestedEpisode={requests[work.id]}
                 activate={() => void act("select", tab.id)}
@@ -360,78 +428,6 @@ function Shell({ state }: { state: LibraryState }) {
           })}
       </main>
     </div>
-  );
-}
-function Tasks({ state, onBack }: { state: LibraryState; onBack(): void }) {
-  const t = useI18n();
-  const tasks = state.transfers;
-  const command = (id: string, action: string) =>
-    void window.tamki
-      .library("transfer", { id, action })
-      .catch((e) => toast.error(errorMessage(e, t)));
-  return (
-    <section className="page">
-      <PageHeader title={t("tasks")} back={onBack} />
-      <Fade className="page-body">
-        <div className="tasks-content">
-          {!tasks.length ? (
-            <Blank title={t("emptyTasks")} />
-          ) : (
-            tasks.map((task) => (
-              <article className="task-row" key={task.id}>
-                <div className="task-top">
-                  <div className="task-copy">
-                    <TextTip>{task.name}</TextTip>
-                    <span className="muted">
-                      {t(task.state)} ·{" "}
-                      {Math.round((task.received / 1024 / 1024) * 10) / 10} /{" "}
-                      {task.total
-                        ? Math.round((task.total / 1024 / 1024) * 10) / 10
-                        : "—"}{" "}
-                      MB
-                    </span>
-                    <TextTip>{task.destination}</TextTip>
-                  </div>
-                  <div className="actions">
-                    {task.state === "running" && (
-                      <IconButton
-                        label={t("pause")}
-                        onClick={() => command(task.id, "pause")}
-                      >
-                        <PauseIcon />
-                      </IconButton>
-                    )}
-                    {task.state === "paused" && (
-                      <IconButton
-                        label={t("resume")}
-                        onClick={() => command(task.id, "resume")}
-                      >
-                        <PlayIcon />
-                      </IconButton>
-                    )}
-                    {["running", "paused"].includes(task.state) && (
-                      <IconButton
-                        label={t("cancel")}
-                        onClick={() => command(task.id, "cancel")}
-                      >
-                        <XIcon />
-                      </IconButton>
-                    )}
-                  </div>
-                </div>
-                <div className="progress-bar">
-                  <i
-                    style={{
-                      width: `${task.state === "completed" ? 100 : task.total ? (task.received / task.total) * 100 : 0}%`,
-                    }}
-                  />
-                </div>
-              </article>
-            ))
-          )}
-        </div>
-      </Fade>
-    </section>
   );
 }
 createRoot(document.getElementById("root")!).render(<App />);

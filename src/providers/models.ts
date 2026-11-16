@@ -5,6 +5,7 @@ import {
   type ModelOption,
 } from "../shared/settings";
 import { ProviderError } from "./provider";
+import { openAIError } from "./openai-stream";
 
 // Discovery never sends keys to redirects or returns raw upstream errors.
 export async function discoverModels(
@@ -33,7 +34,7 @@ export async function discoverModels(
   const suffix =
     source.provider === "anthropic"
       ? "/v1/models"
-      : source.provider === "gemini"
+      : source.protocol === "gemini-generate-content"
         ? "/v1beta/models"
         : "/models";
   let cursor = "";
@@ -47,7 +48,7 @@ export async function discoverModels(
   try {
     for (let page = 0; page < 50; page++) {
       const url = new URL(base.replace(/\/$/, "") + suffix);
-      if (source.provider === "gemini") {
+      if (source.protocol === "gemini-generate-content") {
         url.searchParams.set("pageSize", "1000");
         if (cursor) url.searchParams.set("pageToken", cursor);
       }
@@ -62,6 +63,8 @@ export async function discoverModels(
       });
       if (!response.ok) {
         await response.body?.cancel();
+        if (source.provider === "openai-oauth")
+          throw openAIError(null, response.status);
         throw new ProviderError(
           response.status === 401 || response.status === 403
             ? "sourceUnauthorized"
@@ -85,7 +88,40 @@ export async function discoverModels(
         await reader.cancel().catch(() => {});
       }
       const data = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      if (source.provider === "gemini") {
+      if (source.provider === "openai-oauth") {
+        const result = z
+          .object({
+            models: z
+              .array(
+                z.object({
+                  slug: z.string().min(1).max(200),
+                  display_name: z.string().min(1).max(300),
+                  visibility: z.string(),
+                  context_window: z.number().int().positive().optional(),
+                  max_input_tokens: z.number().int().positive().optional(),
+                  max_output_tokens: z.number().int().positive().optional(),
+                  default_reasoning_level: z.string().max(30).optional(),
+                }),
+              )
+              .max(10000),
+          })
+          .parse(data);
+        // The subscription catalog uses slugs and a provider-defined display order.
+        return result.models
+          .filter((m) => m.visibility === "list")
+          .map((m) => ({
+            id: m.slug,
+            name: m.display_name,
+            ...(m.context_window ? { contextWindow: m.context_window } : {}),
+            ...(m.max_input_tokens ? { inputLimit: m.max_input_tokens } : {}),
+            ...(m.max_output_tokens
+              ? { outputLimit: m.max_output_tokens }
+              : {}),
+            ...(m.default_reasoning_level
+              ? { defaultReasoning: m.default_reasoning_level }
+              : {}),
+          }));
+      } else if (source.protocol === "gemini-generate-content") {
         const result = z
           .object({
             models: z.array(
@@ -94,6 +130,7 @@ export async function discoverModels(
                 displayName: z.string().max(300).optional(),
                 supportedGenerationMethods: z.array(z.string()),
                 outputTokenLimit: z.number().int().positive().optional(),
+                inputTokenLimit: z.number().int().positive().optional(),
               }),
             ),
             nextPageToken: z.string().max(2048).optional(),
@@ -106,6 +143,7 @@ export async function discoverModels(
               id,
               name: m.displayName || id,
               outputLimit: m.outputTokenLimit,
+              ...(m.inputTokenLimit ? { inputLimit: m.inputTokenLimit } : {}),
             });
           }
         cursor = result.nextPageToken || "";
