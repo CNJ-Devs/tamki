@@ -169,11 +169,11 @@ Release 工作流校验 tag、版本号、已合并历史，以及三个平台�
 
 只检查来源编辑器时，先运行一次 `npx playwright install chromium --only-shell`，再运行 `npm run test:sources`。该检查使用无窗口浏览器和模拟 IPC，不打开桌面窗口、不访问账号。OAuth 协议和设置服务测试包含在 `npm test` 中，不启动 Electron。`npm run test:organization` 使用无窗口浏览器检查整理预览、选择、取消、响应式布局和合集删除。`npm run test:ai-connections` 使用无窗口浏览器检查独立连接区域、各类型配置、不选模型保存、取消及响应式弹窗。
 
-本地在 macOS Apple Silicon 上验证。源码保留 Windows 和 Linux 的运行路径，但尚未完成这两个系统的原生运行验证。
+本地验收在 macOS Apple Silicon 上进行。Windows x64 和 Linux x64 的原生验证使用上述托管 runner 自动化样例，不能覆盖所有桌面环境、GPU 或真实账号。
 
 ## 浏览器能力边界
 
-远程网页禁用 Node 集成，不加载应用 preload，并启用沙箱与上下文隔离。本地界面通过有限 IPC 接口操作浏览器，主进程校验调用来源。网页导航限于 HTTP(S)。开发中的浏览器更新按网站来源询问受支持的权限；跨域嵌入请求和未支持的能力仍然拒绝。网站设置提供权限管理及指定网站的数据清理。这批更新尚未测试或打包。
+远程网页禁用 Node 集成，不加载应用 preload，并启用沙箱与上下文隔离。本地界面通过有限 IPC 接口操作浏览器，主进程校验调用来源。网页导航限于 HTTP(S)。开发中的浏览器更新按网站来源询问受支持的权限；跨域嵌入请求和未支持的能力仍然拒绝。网站设置提供权限管理及指定网站的数据清理。本地 HTTP 浏览器样例覆盖权限隔离，真实网站兼容性仍需验收。
 
 密码管理、浏览器账号同步、扩展安装和自动更新尚未实现。Electron 只支持部分 Chrome 扩展 API，不能承诺通用 Chrome 商店兼容。当前播放范围取决于 Chromium 支持的容器和编码。外挂字幕、多音轨选择、转码与 DRM 尚未实现。小窗目前位于可信应用界面内，不能覆盖原生远程网页视图。媒体编码与 DRM 兼容需单独验证。参见 [Electron 扩展文档](https://www.electronjs.org/docs/latest/api/extensions)和[安全建议](https://www.electronjs.org/docs/latest/tutorial/security)。
 

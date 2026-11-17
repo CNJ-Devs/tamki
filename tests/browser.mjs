@@ -211,6 +211,21 @@ const base = `http://127.0.0.1:${server.address().port}`;
 let app, shell;
 let thumbnailEvidence;
 const errors = [];
+let stage = "launch";
+const mark = (value) => console.log(`Browser fixture: ${(stage = value)}`);
+// Keep evidence even if an IPC evaluation hangs and the outer runner kills us.
+const evidenceTimer = setInterval(() => {
+  cp(
+    path.join(profile, "logs/runtime.log"),
+    "test-results/fixture-runtime.log",
+  ).catch(() => {});
+}, 5000);
+evidenceTimer.unref();
+const deadline = setTimeout(() => {
+  console.error(`Browser fixture exceeded its deadline during: ${stage}`);
+  app?.process().kill();
+}, 210000);
+deadline.unref();
 async function launch() {
   app = await electron.launch({
     chromiumSandbox: true,
@@ -607,6 +622,7 @@ try {
   await shell.getByRole("button", { name: "Home", exact: true }).click();
   await shell.getByRole("button", { name: "Settings", exact: true }).click();
   await shell.screenshot({ path: "test-results/settings.png" });
+  mark("storage connections");
   await checkConnections(app, shell, temporary);
   await app.evaluate(({ dialog }, root) => {
     dialog.showOpenDialog = async () => ({
@@ -648,6 +664,7 @@ try {
     2,
   );
   assert(!snapshot.works.some((w) => w.title.includes("Hidden")));
+  mark("settings");
   await checkSettings(app, shell, base, profile);
   await shell.getByRole("button", { name: "Back", exact: true }).click();
   assert.equal(
@@ -683,7 +700,9 @@ try {
   await shell
     .getByRole("button", { name: "Organize information", exact: true })
     .click();
+  mark("recognition");
   await checkRecognition(app, shell);
+  mark("manual episode editing");
   await shell.getByLabel("Name", { exact: true }).fill("Edited series");
   await shell
     .getByLabel("Synopsis", { exact: true })
@@ -703,6 +722,7 @@ try {
   snapshot = await state();
   const series = snapshot.works.find((w) => w.title === "Edited series");
   assert.equal(series.episodes[0].number, "Special 1");
+  mark("local playback");
   await shell.getByRole("button", { name: "Play", exact: true }).click();
   const video = shell.locator(".player video");
   await shell.waitForFunction(() => {
@@ -710,6 +730,7 @@ try {
     return v?.readyState >= 2 && v.duration > 0 && !v.paused;
   });
   // The custom media protocol serves real bytes and obeys Range; arbitrary files cannot be requested.
+  mark("media range and invalid-ticket requests");
   const mediaChecks = await shell.evaluate(async (id) => {
     const url = await window.tamki.library("media", id);
     const good = await fetch(url, { headers: { Range: "bytes=10-19" } });
@@ -726,6 +747,7 @@ try {
   assert.equal(mediaChecks[1], 10);
   assert.match(mediaChecks[2], /^bytes 10-19\//);
   assert.equal(mediaChecks[3], 403);
+  mark("mini player and picture in picture");
   await video.evaluate((v) => {
     v.pause();
     v.currentTime = 1.25;
@@ -951,6 +973,7 @@ try {
     "decoded file identities must remain within their own work",
   );
   await app.close();
+  mark("restart persistence");
   await launch();
   const restoredThumbnail = await shell.evaluate(
     (input) => window.tamki.library("thumbnail", { id: input.id }),
@@ -1038,6 +1061,8 @@ try {
       .catch(() => {});
   throw e;
 } finally {
+  clearInterval(evidenceTimer);
+  clearTimeout(deadline);
   await app?.close().catch(() => {});
   server.close();
   await rm(temporary, { recursive: true, force: true });
