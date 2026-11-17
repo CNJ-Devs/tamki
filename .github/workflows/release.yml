@@ -17,46 +17,9 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-15
-    timeout-minutes: 40
-    env:
-      TAMKI_BACKGROUND_TEST: "1"
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-    outputs:
-      tag: ${{ steps.version.outputs.tag }}
-      prerelease: ${{ steps.version.outputs.prerelease }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-      - run: npm ci
-      - name: Validate tag, version and merged source
-        id: version
-        run: node scripts/release.mjs verify "$RELEASE_TAG"
-      - uses: actions/cache@v4
-        with:
-          path: .cache/ffmpeg-8.0.1
-          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/media-tool.mjs') }}
-      - run: npm run check
-      - run: npm test
-      - run: npm run test:release
-      - run: node tests/browser.mjs
-      - run: node tests/capture-browser.mjs
-      - run: npm run package
-      - name: Verify packaged files, archive and checksum
-        id: archive
-        run: node scripts/release.mjs archive "$RELEASE_TAG"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-assets
-          path: ${{ steps.archive.outputs.directory }}/*
-          if-no-files-found: error
-          retention-days: 1
+    uses: ./.github/workflows/native-build.yml
+    with:
+      release_tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
   publish:
     needs: build
@@ -70,10 +33,18 @@ jobs:
       RELEASE_TAG: ${{ needs.build.outputs.tag }}
       PRERELEASE: ${{ needs.build.outputs.prerelease }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.tag }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - uses: actions/download-artifact@v4
         with:
-          name: release-assets
-          path: release-assets
+          pattern: release-*
+          path: downloaded
+      - name: Verify all platform manifests and combine checksums
+        run: node scripts/release.mjs combine downloaded release-assets "$RELEASE_TAG"
       - name: Verify transferred archive
         working-directory: release-assets
         run: sha256sum --check SHA256SUMS.txt
@@ -94,5 +65,5 @@ jobs:
             fi
             gh release create "$RELEASE_TAG" --verify-tag --draft --title "Tamki $RELEASE_TAG" --notes-file release-notes.md
           fi
-          gh release upload "$RELEASE_TAG" ./*.zip SHA256SUMS.txt --clobber
+          gh release upload "$RELEASE_TAG" ./*.zip ./*.tar.gz SHA256SUMS.txt --clobber
           gh release edit "$RELEASE_TAG" --notes-file release-notes.md --prerelease="$PRERELEASE" --draft=false

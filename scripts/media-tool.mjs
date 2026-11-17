@@ -2,7 +2,6 @@ import { mkdir, readFile, writeFile, stat, cp } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import ffmpegStatic from "ffmpeg-static";
 
 // A local-only remuxer built from unmodified upstream LGPL source. Do not ship
 // ffmpeg-static's macOS binary: that build enables non-redistributable components.
@@ -29,33 +28,15 @@ const flags = [
 ];
 export async function prepareMediaTool(destination) {
   await mkdir(destination, { recursive: true });
-  if (process.platform === "win32") {
-    if (!ffmpegStatic) throw new Error("No media tool for this platform");
-    const configuration = execFileSync(ffmpegStatic, ["-version"], {
-      encoding: "utf8",
-    });
-    if (configuration.includes("--enable-nonfree"))
-      throw new Error("Cannot package a non-redistributable FFmpeg build");
-    await cp(ffmpegStatic, path.join(destination, "ffmpeg.exe"));
-    await cp(
-      "node_modules/ffmpeg-static/ffmpeg.LICENSE",
-      path.join(destination, "FFMPEG-BINARY-LICENSE"),
-    );
-    await cp(
-      "node_modules/ffmpeg-static/LICENSE",
-      path.join(destination, "FFMPEG-STATIC-LICENSE"),
-    );
-    await cp(
-      "node_modules/ffmpeg-static/ffmpeg.README",
-      path.join(destination, "FFMPEG-README"),
-    );
-    await writeFile(
-      path.join(destination, "FFMPEG-BUILD.txt"),
-      configuration +
-        "\nBinary/source distribution: https://github.com/eugeneware/ffmpeg-static/releases/tag/b6.1.1\n",
-    );
-    return;
-  }
+  const windows = process.platform === "win32";
+  const buildFlags = windows
+    ? [
+        ...flags,
+        "--target-os=mingw32",
+        "--arch=x86_64",
+        "--extra-ldflags=-static",
+      ]
+    : flags;
   const cache = path.resolve(".cache", `ffmpeg-${version}`),
     source = path.join(cache, `ffmpeg-${version}`),
     archive = path.join(cache, "source.tar.xz");
@@ -86,17 +67,45 @@ export async function prepareMediaTool(destination) {
     sha256,
     platform: process.platform,
     arch: process.arch,
-    flags,
+    flags: buildFlags,
   });
-  const executable = path.join(source, "ffmpeg");
+  const executable = path.join(source, windows ? "ffmpeg.exe" : "ffmpeg");
   if (
     (await readFile(path.join(cache, "build.json"), "utf8").catch(() => "")) !==
       signature ||
     !(await stat(executable).catch(() => null))
   ) {
     execFileSync("tar", ["-xf", archive, "-C", cache], { stdio: "inherit" });
-    execFileSync("./configure", flags, { cwd: source, stdio: "inherit" });
-    execFileSync("make", ["-j2"], { cwd: source, stdio: "inherit" });
+    if (windows) {
+      if (!process.env.TAMKI_MSYS2_BASH)
+        throw new Error(
+          "Windows builds require MSYS2 UCRT64; set TAMKI_MSYS2_BASH to its usr/bin/bash.exe",
+        );
+      execFileSync(
+        process.env.TAMKI_MSYS2_BASH,
+        [
+          "-lc",
+          'cd "$(cygpath -u "$TAMKI_FFMPEG_SOURCE")" && ./configure "$@" && make -j2',
+          "ffmpeg-build",
+          ...buildFlags,
+        ],
+        {
+          env: {
+            ...process.env,
+            MSYSTEM: "UCRT64",
+            CHERE_INVOKING: "1",
+            TAMKI_FFMPEG_SOURCE: source,
+          },
+          stdio: "inherit",
+        },
+      );
+    } else {
+      execFileSync("./configure", buildFlags, {
+        cwd: source,
+        stdio: "inherit",
+      });
+      execFileSync("make", ["-j2"], { cwd: source, stdio: "inherit" });
+    }
     await writeFile(path.join(cache, "build.json"), signature);
   }
   const configuration = execFileSync(executable, ["-version"], {
@@ -107,7 +116,30 @@ export async function prepareMediaTool(destination) {
     configuration.includes("--enable-gpl")
   )
     throw new Error("Unexpected media tool license configuration");
-  await cp(executable, path.join(destination, "ffmpeg"));
+  if (windows) {
+    const msys = path.resolve(
+      path.dirname(process.env.TAMKI_MSYS2_BASH),
+      "../..",
+    );
+    const dependencies = execFileSync(
+      path.join(msys, "ucrt64/bin/objdump.exe"),
+      ["-p", executable],
+      { encoding: "utf8" },
+    );
+    if (/DLL Name:\s*(?:libgcc|libstdc\+\+|libwinpthread)/i.test(dependencies))
+      throw new Error(
+        "Windows media tool still needs external compiler runtime DLLs",
+      );
+    await cp(
+      path.join(msys, "ucrt64/share/licenses"),
+      path.join(destination, "TOOLCHAIN-LICENSES"),
+      { recursive: true },
+    );
+  }
+  await cp(
+    executable,
+    path.join(destination, windows ? "ffmpeg.exe" : "ffmpeg"),
+  );
   await cp(
     path.join(source, "COPYING.LGPLv2.1"),
     path.join(destination, "FFMPEG-LICENSE"),
@@ -125,6 +157,6 @@ export async function prepareMediaTool(destination) {
   await writeFile(
     path.join(destination, "FFMPEG-BUILD.txt"),
     configuration +
-      `\nSource: https://ffmpeg.org/releases/ffmpeg-${version}.tar.xz\nSHA256: ${sha256}\nBuild: ./configure ${flags.join(" ")} && make -j2\n`,
+      `\nSource: https://ffmpeg.org/releases/ffmpeg-${version}.tar.xz\nSHA256: ${sha256}\nBuild: ./configure ${buildFlags.join(" ")} && make -j2\n`,
   );
 }

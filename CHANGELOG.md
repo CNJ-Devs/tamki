@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.3
+
+- Add separate native Windows x64 ZIP and Linux x64 tar.gz builds alongside macOS Apple Silicon. Each platform runs unit, browser/playback/download integration tests and repeats integration tests against its extracted release archive.
+- Compile the same checksum-pinned LGPL FFmpeg source on all three platforms, including a static Windows build with MSYS2 UCRT64. Ship the corresponding source, licenses and build recipe with each application.
+- Publish only after every platform completes successfully; validate matching commit/version manifests and combine SHA-256 checksums for all packages.
+
+Hosted-runner tests use local fixtures and temporary profiles. Windows/Linux interactive UI, hardware codecs, actual NAS access and paid AI account flows still need real-device acceptance. Windows packages are portable ZIPs; Linux packages target x64 desktop systems with Electron's system dependencies and sandbox prerequisites. No new installer signing or notarization is included.
+
 ## 0.1.0-alpha.2
 
 - Build and publish macOS Apple Silicon releases through GitHub Actions when a matching version tag is pushed after merging to main. Standard hosted runners are used; no local build or manual binary upload is required.

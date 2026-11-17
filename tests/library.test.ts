@@ -384,7 +384,12 @@ test("official-tool authorization uses stdin, parses multiline completion, and c
   `;
   await writeFile(executable, source);
   await chmod(executable, 0o700);
-  const cli = new ZSpaceCLI(executable, path.join(temporary, "profile"));
+  const cli = new ZSpaceCLI(
+    process.execPath,
+    path.join(temporary, "profile"),
+    undefined,
+    [executable],
+  );
   try {
     const login = await cli.begin("fixture-one");
     assert.equal(new URL(login.url).origin, "https://oauth.zconnect.cn");
