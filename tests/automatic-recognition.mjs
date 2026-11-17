@@ -45,10 +45,13 @@ export async function checkAutomaticRecognition(app, shell, temporary, base) {
           });
         }
         if (url.hostname === "i0.hdslb.com") {
-          const headers = new Headers({ "content-type": "jpg" });
-          return net
-            .fetch(`${base}/cover`)
-            .then((response) => new Response(response.body, { headers }));
+          return new Response(
+            Buffer.from(
+              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXWsAAAAASUVORK5CYII=",
+              "base64",
+            ),
+            { headers: { "content-type": "jpg" } },
+          );
         }
         if (url.hostname === "api.bgm.tv")
           return net.fetch(`${base}/metadata${url.pathname}${url.search}`, {

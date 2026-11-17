@@ -1,11 +1,16 @@
 import { writeFile, chmod } from "node:fs/promises";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 
 export async function checkConnections(app, shell, temporary) {
-  const cli = path.join(temporary, "zspace-cli-fixture");
+  const script = path.join(temporary, "zspace-cli-fixture.mjs");
+  const cli =
+    process.platform === "win32"
+      ? path.join(temporary, "zspace-cli-fixture.exe")
+      : script;
   await writeFile(
-    cli,
+    script,
     `#!/usr/bin/env node
 const args = process.argv.slice(2);
 const reply = data => console.log(JSON.stringify({ok:true,data}));
@@ -23,7 +28,29 @@ if (args.includes('login')) {
 }
 `,
   );
-  await chmod(cli, 0o700);
+  await chmod(script, 0o700);
+  if (process.platform === "win32") {
+    const msys = path.resolve(
+      path.dirname(process.env.TAMKI_MSYS2_BASH),
+      "../..",
+    );
+    const compiler = path.join(msys, "ucrt64/bin/gcc.exe");
+    execFileSync(
+      compiler,
+      ["-municode", "-static", "tests/fixtures/cli-launcher.c", "-o", cli],
+      {
+        env: {
+          ...process.env,
+          PATH:
+            path.join(msys, "ucrt64/bin") + path.delimiter + process.env.PATH,
+        },
+        stdio: "inherit",
+      },
+    );
+    await app.evaluate((_electron, node) => {
+      process.env.TAMKI_FIXTURE_NODE = node;
+    }, process.execPath);
+  }
   await app.evaluate(({ dialog }, file) => {
     dialog.showOpenDialog = async () => ({
       canceled: false,
