@@ -1,3 +1,4 @@
+import { waitForAsync } from "./wait.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -35,7 +36,8 @@ export async function checkSettings(app, shell, base, profile) {
   await iconGroup
     .getByRole("radio", { name: "Color base", exact: true })
     .click();
-  await shell.waitForFunction(
+  await waitForAsync(
+    shell,
     async () =>
       (await window.tamki.library("state")).preferences.appIconStyle ===
       "color",

@@ -77,13 +77,15 @@ export async function prepareMediaTool(destination) {
       signature ||
     !(await stat(executable).catch(() => null))
   ) {
+    console.log("FFmpeg: extracting verified source archive");
     execFileSync(
       windows
         ? path.join(process.env.SystemRoot, "System32", "tar.exe")
         : "tar",
       ["-xf", archive, "-C", cache],
-      { stdio: "inherit" },
+      { stdio: "inherit", timeout: 120000 },
     );
+    console.log("FFmpeg: source extraction complete");
     if (windows) {
       if (!process.env.TAMKI_MSYS2_BASH)
         throw new Error(
@@ -112,8 +114,11 @@ export async function prepareMediaTool(destination) {
       try {
         // Avoid executing configure probes in the MSYS2 host. The resulting
         // Windows binary is executed by version checks and real mux tests below.
+        console.log("FFmpeg: configuring Windows build");
         run('./configure "$@"', buildFlags, 180000);
+        console.log("FFmpeg: compiling Windows build");
         run("make -j4", [], 900000);
+        console.log("FFmpeg: Windows compilation complete");
       } catch (error) {
         if (process.env.CI === "true") {
           await mkdir("test-results", { recursive: true });

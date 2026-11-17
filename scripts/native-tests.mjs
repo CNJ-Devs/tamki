@@ -56,6 +56,7 @@ try {
       XDG_DATA_HOME: desktop,
       XDG_RUNTIME_DIR: desktop,
       XDG_CURRENT_DESKTOP: "GNOME",
+      TAMKI_TEST_PASSWORD_STORE: "gnome-libsecret",
     });
   }
   for (const test of ["browser", "capture-browser"]) {
@@ -69,7 +70,7 @@ try {
             "-a",
             "bash",
             "-c",
-            'printf %s tamki-fixture-keyring | gnome-keyring-daemon --unlock --components=secrets; exec "$@"',
+            'set -e; printf %s tamki-fixture-keyring | gnome-keyring-daemon --unlock; eval "$(gnome-keyring-daemon --start --components=secrets)"; exec "$@"',
             "tamki-test-keyring",
             ...args,
           ]

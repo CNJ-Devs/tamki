@@ -1,3 +1,4 @@
+import { waitForAsync } from "./wait.mjs";
 import { mkdir, cp } from "node:fs/promises";
 import path from "node:path";
 import assert from "node:assert/strict";
@@ -130,7 +131,8 @@ export async function checkAutomaticRecognition(app, shell, temporary, base) {
     });
     await window.tamki.library("refresh");
   }, oldSource);
-  await shell.waitForFunction(
+  await waitForAsync(
+    shell,
     async () => !(await window.tamki.library("state")).refreshing,
   );
   // Exercise the real public adapter, persisted explicit queue and artwork cache
@@ -141,7 +143,7 @@ export async function checkAutomaticRecognition(app, shell, temporary, base) {
     path.join(root, "Batch series/01.webm"),
   );
   await shell.evaluate(() => window.tamki.library("refresh"));
-  await shell.waitForFunction(async () => {
+  await waitForAsync(shell, async () => {
     const state = await window.tamki.library("state");
     return (
       !state.refreshing && state.works.some((w) => w.title === "Batch series")
@@ -160,7 +162,8 @@ export async function checkAutomaticRecognition(app, shell, temporary, base) {
     return { id: work.id, queued };
   });
   assert.deepEqual(batch.queued.queued, [batch.id]);
-  await shell.waitForFunction(
+  await waitForAsync(
+    shell,
     async (id) =>
       (await window.tamki.library("state")).works.find((w) => w.id === id)
         ?.recognition?.status === "complete",

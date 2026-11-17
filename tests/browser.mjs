@@ -1,3 +1,4 @@
+import { waitForAsync } from "./wait.mjs";
 import { _electron as electron } from "playwright";
 import { createServer } from "node:http";
 import {
@@ -212,7 +213,12 @@ let thumbnailEvidence;
 const errors = [];
 async function launch() {
   app = await electron.launch({
-    args: process.env.TAMKI_PACKAGED_EXECUTABLE ? [] : ["."],
+    args: [
+      ...(process.env.TAMKI_PACKAGED_EXECUTABLE ? [] : ["."]),
+      ...(process.env.TAMKI_TEST_PASSWORD_STORE
+        ? [`--password-store=${process.env.TAMKI_TEST_PASSWORD_STORE}`]
+        : []),
+    ],
     executablePath: process.env.TAMKI_PACKAGED_EXECUTABLE,
     env: { ...process.env, TAMKI_TEST_PROFILE: profile },
     timeout: 30000,
@@ -222,6 +228,15 @@ async function launch() {
       errors.push(d.toString());
   });
   shell = await app.firstWindow();
+  if (process.platform === "linux") {
+    const storage = await app.evaluate(({ safeStorage }) => ({
+      available: safeStorage.isEncryptionAvailable(),
+      backend: safeStorage.getSelectedStorageBackend(),
+    }));
+    console.log("Linux encrypted credential storage:", storage);
+    assert.equal(storage.available, true);
+    assert.notEqual(storage.backend, "basic_text");
+  }
   // Answer native permission prompts inside the fixture, without displaying
   // system dialogs or waiting for interaction on the user's desktop.
   await app.evaluate(({ dialog }) => {
@@ -562,7 +577,7 @@ try {
     file,
   );
   await current.getByRole("link", { name: "Download", exact: true }).click();
-  await shell.waitForFunction(async () =>
+  await waitForAsync(shell, async () =>
     (await window.tamki.library("state")).transfers.some(
       (t) => t.state === "completed",
     ),
@@ -606,11 +621,11 @@ try {
   await shell.getByRole("listbox").waitFor({ state: "hidden" });
   await shell.screenshot({ path: "test-results/scan-depth.png" });
   await shell.getByRole("button", { name: "Save", exact: true }).click();
-  await shell.waitForFunction(async () => {
+  await waitForAsync(shell, async () => {
     const s = await window.tamki.library("state");
     return !s.refreshing && s.works.length === 2;
   });
-  await shell.waitForFunction(async () =>
+  await waitForAsync(shell, async () =>
     (await window.tamki.library("state")).works.every((w) =>
       w.episodes.every((e) => e.duration > 0),
     ),
@@ -809,7 +824,8 @@ try {
     2,
   );
   await shell.getByRole("button", { name: "Save", exact: true }).click();
-  await shell.waitForFunction(
+  await waitForAsync(
+    shell,
     async (id) =>
       (await window.tamki.library("state")).works.find((w) => w.id === id)
         .episodes.length === 3,
@@ -843,7 +859,8 @@ try {
       );
   }
   await shell.evaluate(() => window.tamki.library("refresh"));
-  await shell.waitForFunction(
+  await waitForAsync(
+    shell,
     async (folders) => {
       const state = await window.tamki.library("state");
       return (
@@ -884,14 +901,18 @@ try {
     batchFolders.map((name) => path.join(media, name)),
   );
   assert.equal(aiBatch.queued.length, 3);
-  await shell.waitForFunction(async (ids) => {
-    const state = await window.tamki.library("state");
-    return ids.every(
-      (id) =>
-        state.works.find((w) => w.id === id)?.recognition?.status ===
-        "complete",
-    );
-  }, aiBatch.ids);
+  await waitForAsync(
+    shell,
+    async (ids) => {
+      const state = await window.tamki.library("state");
+      return ids.every(
+        (id) =>
+          state.works.find((w) => w.id === id)?.recognition?.status ===
+          "complete",
+      );
+    },
+    aiBatch.ids,
+  );
   assert.equal(
     combinedMetadataRequests.length - beforeCombined,
     1,

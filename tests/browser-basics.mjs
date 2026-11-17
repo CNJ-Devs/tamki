@@ -1,3 +1,4 @@
+import { waitForAsync } from "./wait.mjs";
 import { _electron as electron } from "playwright";
 import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -57,7 +58,7 @@ try {
     );
   await call("new");
   await call("navigate", base + "/one");
-  await shell.waitForFunction(async () =>
+  await waitForAsync(shell, async () =>
     (await window.tamki.action("state")).tabs.some(
       (t) => t.title === "Fixture /one",
     ),
@@ -81,7 +82,7 @@ try {
   assert.equal(state.tabs.length, 2);
   await call("find-open");
   await call("find", { text: "needle" });
-  await shell.waitForFunction(async () => {
+  await waitForAsync(shell, async () => {
     const s = await window.tamki.action("state");
     return s.tabs.find((t) => t.id === s.active)?.find?.matches === 2;
   });
@@ -120,7 +121,7 @@ try {
   await shell.locator("#address").press("ArrowDown");
   await shell.locator("#address").press("Enter");
   await call("navigate", base + "/three");
-  await shell.waitForFunction(async () =>
+  await waitForAsync(shell, async () =>
     (await window.tamki.action("state")).tabs.some(
       (t) => t.title === "Fixture /three",
     ),
@@ -129,7 +130,7 @@ try {
   app = await launch();
   shell = await app.firstWindow();
   await shell.waitForFunction(() => window.tamki);
-  await shell.waitForFunction(async () =>
+  await waitForAsync(shell, async () =>
     (await window.tamki.action("state")).tabs.some(
       (t) => t.title === "Fixture /three",
     ),
@@ -141,7 +142,7 @@ try {
   assert.equal(restored.zoom, 110);
   assert.equal(state.bookmarks[0].title, "Saved fixture");
   await call("back");
-  await shell.waitForFunction(async () =>
+  await waitForAsync(shell, async () =>
     (await window.tamki.action("state")).tabs.some(
       (t) => t.title === "Fixture /one",
     ),

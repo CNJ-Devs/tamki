@@ -1,3 +1,4 @@
+import { waitForAsync } from "./wait.mjs";
 import { writeFile, chmod } from "node:fs/promises";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -88,7 +89,7 @@ if (args.includes('login')) {
     .locator(".connection-row")
     .filter({ hasText: "Fixture NAS" })
     .waitFor();
-  await shell.waitForFunction(async () => {
+  await waitForAsync(shell, async () => {
     const s = await window.tamki.library("state");
     return !s.refreshing && s.connections.some((c) => c.name === "Fixture NAS");
   });

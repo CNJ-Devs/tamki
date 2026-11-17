@@ -61,7 +61,7 @@ jobs:
       - if: runner.os == 'Linux'
         run: |
           npx playwright install-deps chromium
-          sudo apt-get install --no-install-recommends -y gnome-keyring dbus-x11
+          sudo apt-get install --no-install-recommends -y gnome-keyring dbus-x11 libsecret-1-0
       - if: inputs.release_tag != ''
         run: node scripts/release.mjs verify "$RELEASE_TAG"
       - uses: actions/cache/restore@v4
