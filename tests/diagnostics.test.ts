@@ -46,10 +46,13 @@ test("logs allow only operational metadata and bounded private files", () => {
     const text = readFileSync(path.join(directory, "runtime.log"), "utf8");
     assert(!text.includes("SECRET"));
     assert.equal(lines(directory)[0].origin, "https://example.test");
-    assert.equal(
-      statSync(path.join(directory, "runtime.log")).mode & 0o777,
-      0o600,
-    );
+    // Windows reports emulated mode bits; access is inherited from the profile
+    // directory's NTFS ACL. POSIX permission bits are meaningful only on Unix.
+    if (process.platform !== "win32")
+      assert.equal(
+        statSync(path.join(directory, "runtime.log")).mode & 0o777,
+        0o600,
+      );
     assert.deepEqual(diagnosticError(new Error("Bearer SECRET")), {
       errorName: "Error",
     });
