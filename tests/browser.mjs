@@ -213,13 +213,16 @@ let thumbnailEvidence;
 const errors = [];
 async function launch() {
   app = await electron.launch({
+    chromiumSandbox: true,
     args: [
-      ...(process.env.TAMKI_PACKAGED_EXECUTABLE ? [] : ["."]),
       ...(process.env.TAMKI_TEST_PASSWORD_STORE
         ? [`--password-store=${process.env.TAMKI_TEST_PASSWORD_STORE}`]
         : []),
+      ...(process.env.TAMKI_PACKAGED_EXECUTABLE ? [] : ["."]),
     ],
-    executablePath: process.env.TAMKI_PACKAGED_EXECUTABLE,
+    executablePath:
+      process.env.TAMKI_PACKAGED_EXECUTABLE ||
+      process.env.TAMKI_TEST_ELECTRON_EXECUTABLE,
     env: { ...process.env, TAMKI_TEST_PROFILE: profile },
     timeout: 30000,
   });
@@ -229,13 +232,16 @@ async function launch() {
   });
   shell = await app.firstWindow();
   if (process.platform === "linux") {
-    const storage = await app.evaluate(({ safeStorage }) => ({
+    const storage = await app.evaluate(({ safeStorage, app }) => ({
       available: safeStorage.isEncryptionAvailable(),
       backend: safeStorage.getSelectedStorageBackend(),
+      requested: app.commandLine.getSwitchValue("password-store"),
+      sandboxDisabled: app.commandLine.hasSwitch("no-sandbox"),
     }));
     console.log("Linux encrypted credential storage:", storage);
     assert.equal(storage.available, true);
     assert.notEqual(storage.backend, "basic_text");
+    assert.equal(storage.sandboxDisabled, false);
   }
   // Answer native permission prompts inside the fixture, without displaying
   // system dialogs or waiting for interaction on the user's desktop.

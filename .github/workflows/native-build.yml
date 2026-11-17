@@ -52,7 +52,7 @@ jobs:
         id: msys2
         with:
           msystem: UCRT64
-          install: mingw-w64-ucrt-x86_64-gcc make diffutils
+          install: mingw-w64-ucrt-x86_64-gcc make diffutils tar xz
       - if: runner.os == 'Windows'
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}

@@ -78,20 +78,12 @@ export async function prepareMediaTool(destination) {
     !(await stat(executable).catch(() => null))
   ) {
     console.log("FFmpeg: extracting verified source archive");
-    execFileSync(
-      windows
-        ? path.join(process.env.SystemRoot, "System32", "tar.exe")
-        : "tar",
-      ["-xf", archive, "-C", cache],
-      { stdio: "inherit", timeout: 120000 },
-    );
-    console.log("FFmpeg: source extraction complete");
     if (windows) {
       if (!process.env.TAMKI_MSYS2_BASH)
         throw new Error(
           "Windows builds require MSYS2 UCRT64; set TAMKI_MSYS2_BASH to its usr/bin/bash.exe",
         );
-      const run = (command, args, timeout) =>
+      const run = (command, args, timeout, directory = source) =>
         execFileSync(
           process.env.TAMKI_MSYS2_BASH,
           [
@@ -105,13 +97,17 @@ export async function prepareMediaTool(destination) {
               ...process.env,
               MSYSTEM: "UCRT64",
               CHERE_INVOKING: "1",
-              TAMKI_FFMPEG_SOURCE: source,
+              TAMKI_FFMPEG_SOURCE: directory,
             },
             stdio: "inherit",
             timeout,
           },
         );
       try {
+        // Native Windows tar stalls on this upstream xz archive. GNU tar runs
+        // inside MSYS2 with a relative filename so D: is never a remote host.
+        run("tar -xJf source.tar.xz", [], 120000, cache);
+        console.log("FFmpeg: source extraction complete");
         // Avoid executing configure probes in the MSYS2 host. The resulting
         // Windows binary is executed by version checks and real mux tests below.
         console.log("FFmpeg: configuring Windows build");
@@ -130,6 +126,11 @@ export async function prepareMediaTool(destination) {
         throw error;
       }
     } else {
+      execFileSync("tar", ["-xf", archive, "-C", cache], {
+        stdio: "inherit",
+        timeout: 120000,
+      });
+      console.log("FFmpeg: source extraction complete");
       execFileSync("./configure", buildFlags, {
         cwd: source,
         stdio: "inherit",

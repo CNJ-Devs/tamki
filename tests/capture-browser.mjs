@@ -120,12 +120,15 @@ async function settlePanel(page) {
 }
 try {
   app = await electron.launch({
-    executablePath: process.env.TAMKI_CAPTURE_EXECUTABLE,
+    chromiumSandbox: true,
+    executablePath:
+      process.env.TAMKI_CAPTURE_EXECUTABLE ||
+      process.env.TAMKI_TEST_ELECTRON_EXECUTABLE,
     args: [
-      ...(process.env.TAMKI_CAPTURE_EXECUTABLE ? [] : ["."]),
       ...(process.env.TAMKI_TEST_PASSWORD_STORE
         ? [`--password-store=${process.env.TAMKI_TEST_PASSWORD_STORE}`]
         : []),
+      ...(process.env.TAMKI_CAPTURE_EXECUTABLE ? [] : ["."]),
     ],
     env: {
       ...process.env,
