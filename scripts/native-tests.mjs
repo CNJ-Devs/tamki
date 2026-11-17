@@ -43,6 +43,7 @@ try {
   const env = {
     ...process.env,
     TAMKI_BACKGROUND_TEST: "1",
+    ...(process.platform === "win32" ? { TAMKI_TEST_SHOW_WINDOW: "1" } : {}),
     ...(executable
       ? {
           TAMKI_PACKAGED_EXECUTABLE: executable,

@@ -246,8 +246,8 @@ async function launch() {
       errors.push(d.toString());
   });
   shell = await app.firstWindow();
-  // Xvfb is an isolated desktop. Map the window so Chromium keeps submitting
-  // compositor frames after switching native child views and taking screenshots.
+  // Map CI desktop windows so Chromium keeps submitting compositor frames and
+  // does not throttle animation/actionability checks in a hidden Windows window.
   if (process.env.TAMKI_TEST_SHOW_WINDOW === "1")
     await app.evaluate(({ BaseWindow }) =>
       BaseWindow.getAllWindows()[0].showInactive(),
