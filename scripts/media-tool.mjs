@@ -75,7 +75,13 @@ export async function prepareMediaTool(destination) {
       signature ||
     !(await stat(executable).catch(() => null))
   ) {
-    execFileSync("tar", ["-xf", archive, "-C", cache], { stdio: "inherit" });
+    execFileSync(
+      windows
+        ? path.join(process.env.SystemRoot, "System32", "tar.exe")
+        : "tar",
+      ["-xf", archive, "-C", cache],
+      { stdio: "inherit" },
+    );
     if (windows) {
       if (!process.env.TAMKI_MSYS2_BASH)
         throw new Error(

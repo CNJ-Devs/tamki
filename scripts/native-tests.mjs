@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { releaseTarget, tarCommand } from "./release.mjs";
 
 const target = releaseTarget();
@@ -29,7 +30,10 @@ try {
   if (process.platform === "linux" && process.env.CI === "true") {
     const helper = executable
       ? path.join(path.dirname(executable), "chrome-sandbox")
-      : path.resolve("node_modules/electron/dist/chrome-sandbox");
+      : path.join(
+          path.dirname(createRequire(import.meta.url)("electron")),
+          "chrome-sandbox",
+        );
     // Configure the native setuid sandbox in the disposable runner. Never use
     // --no-sandbox or change remote WebContents security to make tests pass.
     execFileSync("sudo", ["chown", "root:root", helper]);
