@@ -451,6 +451,7 @@ export async function aiRecognition(
         input.title,
         ...input.files.map((f) => `${input.title} ${f.filename}`),
       ],
+      searchPolicy: input.missing ? "optional" : undefined,
     },
     signal,
     request,
@@ -462,7 +463,7 @@ export async function aiRecognition(
   };
 }
 
-/** Keep long seasons bounded; no batch is applied until the entire request succeeds. */
+/** Try the complete work first; subdivide only on a confirmed provider capacity error. */
 export async function aiRecognitionBatches(
   source: SourceConfig,
   key: string,
@@ -473,24 +474,6 @@ export async function aiRecognitionBatches(
   request: typeof fetch = fetch,
   execute?: (input: RecognitionInput) => Promise<RecognitionResponse>,
 ): Promise<RecognitionResponse> {
-  const size = Math.max(
-    1,
-    Math.min(24, Math.floor((source.maxOutputTokens - 2048) / 512)),
-  );
-  const batches: RecognitionInput["files"][] = [];
-  let batch: RecognitionInput["files"] = [],
-    characters = 0;
-  for (const file of input.files) {
-    const length = JSON.stringify(file).length;
-    if (batch.length && (batch.length >= size || characters + length > 16000)) {
-      batches.push(batch);
-      batch = [];
-      characters = 0;
-    }
-    batch.push(file);
-    characters += length;
-  }
-  if (batch.length) batches.push(batch);
   const combined: Extract<RecognitionResponse, { kind: "result" }> = {
     kind: "result",
     result: { work: null, files: [] },
@@ -538,16 +521,22 @@ export async function aiRecognitionBatches(
     } catch (error) {
       if (
         error instanceof ProviderError &&
-        error.code === "recognitionTruncated" &&
+        ["recognitionTruncated", "recognitionContextLimit"].includes(
+          error.code,
+        ) &&
         files.length > 1
       ) {
+        logEvent("recognition.capacity.split", {
+          files: files.length,
+          reason: error.code,
+        });
         const middle = Math.ceil(files.length / 2);
         await run(files.slice(0, middle));
         await run(files.slice(middle));
       } else throw error;
     }
   };
-  for (const files of batches) await run(files);
+  await run(input.files);
   combined.result = validateRecognition(combined.result, input);
   return combined;
 }

@@ -94,6 +94,34 @@ export const captureSelectionSchema = z
 export const downloadSubmitSchema = z
   .object({
     draftId: z.string().uuid(),
+    resourceIds: z
+      .array(z.string().min(1).max(150))
+      .min(1)
+      .max(10000)
+      .refine((ids) => new Set(ids).size === ids.length)
+      .optional(),
+    qualityOverrides: z
+      .array(
+        z
+          .object({
+            resourceId: z.string().min(1).max(150),
+            qualities: z
+              .array(z.number().int().min(0).max(1000))
+              .min(1)
+              .max(20)
+              .refine(
+                (q) =>
+                  new Set(q).size === q.length &&
+                  (!q.includes(0) || q.length === 1),
+              ),
+          })
+          .strict(),
+      )
+      .max(10000)
+      .refine(
+        (rows) => new Set(rows.map((r) => r.resourceId)).size === rows.length,
+      )
+      .optional(),
     qualities: z
       .array(z.number().int().min(0).max(1000))
       .min(1)
@@ -109,6 +137,11 @@ export interface CaptureQuality {
   label: string;
 }
 export interface DownloadDraft {
+  itemQualities?: Record<
+    string,
+    { qualities?: CaptureQuality[]; error?: string }
+  >;
+  qualityChecking?: boolean;
   qualities?: CaptureQuality[];
   qualityError?: string;
   id: string;
@@ -116,7 +149,14 @@ export interface DownloadDraft {
   count: number;
   series: boolean;
   hierarchy?: { title: string; count: number }[];
+  choices?: DownloadChoice[];
   target: z.infer<typeof targetSchema> | null;
+}
+export interface DownloadChoice {
+  id: string;
+  title: string;
+  resourceIds: string[];
+  children?: DownloadChoice[];
 }
 export interface CaptureViewState {
   surface: "reel" | "panel";
@@ -174,9 +214,16 @@ export const downloadActionSchema = z
   .object({
     id: z.string().uuid(),
     itemId: z.string().uuid().optional(),
+    itemIds: z
+      .array(z.string().uuid())
+      .min(1)
+      .max(10000)
+      .refine((ids) => new Set(ids).size === ids.length)
+      .optional(),
     action: z.enum(["pause", "resume", "retry", "cancel", "remove"]),
   })
-  .strict();
+  .strict()
+  .refine((v) => !(v.itemId && v.itemIds));
 export function safeDownloadName(value: string): string {
   let name = value
     .replace(/[<>:"/\\|?*\x00-\x1f]/g, "_")

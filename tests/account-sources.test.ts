@@ -195,6 +195,9 @@ test("Claude source login, dynamic models, search proof, batched recognition and
         order: i + 1,
       })),
     };
+    const beforeRequests = runtime.calls.filter((c) =>
+      c.args.includes("--json-schema"),
+    ).length;
     const result = await settings.accounts.recognize(
       sourceConfig(saved),
       input,
@@ -203,8 +206,10 @@ test("Claude source login, dynamic models, search proof, batched recognition and
     );
     assert.equal(result.kind, "result");
     if (result.kind === "result") assert.equal(result.result.files.length, 30);
-    assert(
-      runtime.calls.filter((c) => c.args.includes("--json-schema")).length >= 3,
+    assert.equal(
+      runtime.calls.filter((c) => c.args.includes("--json-schema")).length -
+        beforeRequests,
+      1,
     );
     await settings.request("source-account-discard", source.id);
     assert.equal(runtime.h.loggedIn, true);

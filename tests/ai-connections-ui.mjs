@@ -654,13 +654,29 @@ try {
       animations: "disabled",
     });
   }
-  await page.goto(base + '?lang=zh&source-options');
-  const configuredDefault = page.getByRole('combobox', { name: '默认识别来源', exact: true });
-  assert.equal(await configuredDefault.textContent(), 'Configured GPT');
+  await page.goto(base + "?lang=zh&source-options");
+  const configuredDefault = page.getByRole("combobox", {
+    name: "默认识别来源",
+    exact: true,
+  });
+  assert.equal(await configuredDefault.textContent(), "Configured GPT");
   await configuredDefault.click();
-  assert.deepEqual(await page.getByRole('option').allTextContents(), ['Bangumi', 'TMDB · 未配置', '文件名', 'Configured GPT']);
-  await page.getByRole('option', { name: 'Configured GPT', exact: true }).click();
-  assert.equal(await page.evaluate(() => window.fixture.config.recognition.defaultSourceId), 'configured-source');
+  assert.deepEqual(await page.getByRole("option").allTextContents(), [
+    "Bangumi",
+    "Bilibili",
+    "TMDB · 未配置",
+    "文件名",
+    "Configured GPT",
+  ]);
+  await page
+    .getByRole("option", { name: "Configured GPT", exact: true })
+    .click();
+  assert.equal(
+    await page.evaluate(
+      () => window.fixture.config.recognition.defaultSourceId,
+    ),
+    "configured-source",
+  );
   assert.deepEqual(errors, []);
   console.log(
     "AI connection UI passed: all provider fields, independent saving, named accounts, secret clearing, fixed-height responsive dialogs, responsive recognition settings and unified source configuration.",

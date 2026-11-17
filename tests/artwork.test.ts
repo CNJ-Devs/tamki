@@ -130,6 +130,80 @@ test("missing or failed direct cover falls back to the verified page and caches 
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("Bangumi subject covers are extracted without social metadata and without selecting avatar or unrelated images", () => {
+  const html = `<img class="avatarCover" src="//lain.bgm.tv/pic/user/l/avatar.jpg">
+    <img class="cover" src="https://unrelated.example.org/banner.jpg">
+    <img class="cover" src="//lain.bgm.tv/r/400/pic/cover/l/aa/bb/42_poster.jpg">`;
+  for (const host of ["bgm.tv", "bangumi.tv", "chii.in"])
+    assert.deepEqual(pageArtwork(html, `https://${host}/subject/42`), [
+      "https://lain.bgm.tv/r/400/pic/cover/l/aa/bb/42_poster.jpg",
+    ]);
+  for (const page of [
+    "https://bgm.tv/subject_search/42",
+    "https://unrelated.example.org/subject/42",
+    "https://bgm.tv.example.org/subject/42",
+  ])
+    assert.deepEqual(pageArtwork(html, page), []);
+});
+test("verified Bangumi subject pages use browser networking, then cache only their explicit cover", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "tamki-subject-cover-"));
+  try {
+    const calls: string[] = [];
+    const request = providerArtworkFetch((async (input, init) => {
+      const url = String(input);
+      calls.push(url);
+      assert.equal(init?.credentials, "omit");
+      assert.equal(init?.redirect, "manual");
+      if (url === "https://bangumi.tv/subject/42")
+        return new Response(
+          '<img class="cover" src="//lain.bgm.tv/pic/cover/l/aa/bb/42_poster.jpg">',
+          { headers: { "content-type": "text/html" } },
+        );
+      assert.equal(url, "https://lain.bgm.tv/pic/cover/l/aa/bb/42_poster.jpg");
+      return new Response(png, { headers: { "content-type": "image/png" } });
+    }) as typeof fetch);
+    const cache = new ArtworkCache(dir, request);
+    const key = await cache.resolve(
+      null,
+      "https://bangumi.tv/subject/42",
+      AbortSignal.timeout(1000),
+    );
+    assert.equal((await cache.read(key)).type, "image/png");
+    assert.equal(calls.length, 2);
+    await assert.rejects(
+      providerArtworkFetch(
+        (async () =>
+          new Response(null, {
+            status: 302,
+            headers: { location: "https://127.0.0.1/" },
+          })) as typeof fetch,
+      )("https://bangumi.tv/subject/42"),
+      /artworkUnavailable/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("browser artwork networking is limited to exact provider routes; other public URLs retain the checked fetcher", async () => {
+  const routes: string[] = [];
+  const request = providerArtworkFetch(
+    (async () => {
+      throw new Error("unexpectedBrowserRoute");
+    }) as typeof fetch,
+    (async (input) => {
+      routes.push(String(input));
+      return new Response("fixture");
+    }) as typeof fetch,
+  );
+  const urls = [
+    "https://bangumi.tv/subject/42?redirect=https://127.0.0.1/",
+    "https://bangumi.tv/subject_search/42",
+    "https://bangumi.tv.example.org/subject/42",
+    "https://studio.example.org/work/42",
+  ];
+  for (const url of urls) await request(url);
+  assert.deepEqual(routes, urls);
+});
 test("page fallback is bounded, cancellable and cannot use HTML as image bytes", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "tamki-cover-bounds-"));
   try {
@@ -251,4 +325,42 @@ test("Bilibili official artwork uses browser networking with a referer and no cr
     (await request("https://i0.hdslb.com/bfs/bangumi/poster.png")).status,
     200,
   );
+});
+
+test("Bilibili bare raster MIME labels are normalized but HTML still fails image validation", async () => {
+  const directory = await mkdtemp(
+    path.join(os.tmpdir(), "tamki-bilibili-image-"),
+  );
+  try {
+    const request = providerArtworkFetch(
+      (async () =>
+        new Response(png, {
+          headers: { "content-type": "jpg" },
+        })) as typeof fetch,
+    );
+    const cache = new ArtworkCache(directory, request);
+    const key = await cache.cache(
+      "https://i0.hdslb.com/bfs/bangumi/poster.jpg",
+      new AbortController().signal,
+    );
+    assert.equal((await cache.read(key)).type, "image/png");
+    const invalid = new ArtworkCache(
+      directory,
+      providerArtworkFetch(
+        (async () =>
+          new Response("<html>not an image</html>", {
+            headers: { "content-type": "jpg" },
+          })) as typeof fetch,
+      ),
+    );
+    await assert.rejects(
+      invalid.cache(
+        "https://i0.hdslb.com/bfs/bangumi/invalid.jpg",
+        new AbortController().signal,
+      ),
+      /artworkUnavailable/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

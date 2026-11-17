@@ -36,6 +36,7 @@ import { LibraryPage, DetailPage } from "./library-page";
 import { Settings } from "./settings";
 import { MetadataEditor } from "./editor";
 import { Player } from "./player";
+import { Picker } from "./tab-picker";
 import { useLibraryDurations } from "./media";
 import { LocaleContext, useI18n, errorMessage } from "./i18n";
 import { applyTheme } from "./theme";
@@ -204,9 +205,17 @@ function Shell({ state }: { state: LibraryState }) {
         addressRef.current?.select();
       });
     });
-    const focusTabs = window.tamki.onFocusTabs(() =>
-      pickerTrigger.current?.focus(),
-    );
+    const focusTabs = window.tamki.onFocusTabs(() => {
+      const actions = document.querySelector<HTMLElement>(".browser-actions");
+      const index = ["tabs", "bookmarks", "history", "tasks"].indexOf(
+        actions?.dataset.pickerMode || "tabs",
+      );
+      const button =
+        actions?.querySelectorAll<HTMLButtonElement>(":scope > button")[
+          Math.max(0, index)
+        ];
+      (button || pickerTrigger.current)?.focus();
+    });
     return () => {
       off();
       offPage();
@@ -284,6 +293,14 @@ function Shell({ state }: { state: LibraryState }) {
     <div
       className="app-shell"
       data-platform={window.tamki.platform}
+      data-picker-open={browser.pickerOpen && browser.pickerMode !== "address"}
+      data-panel-overlay={
+        browser.pickerOpen &&
+        browser.pickerMode !== "address" &&
+        current?.kind === "web" &&
+        /^https?:/.test(current.url) &&
+        !current.error
+      }
       onPointerDown={(event) => {
         if (
           browser.pickerOpen &&
@@ -409,18 +426,16 @@ function Shell({ state }: { state: LibraryState }) {
           <PlusIcon />
         </IconButton>
         <div className="tabstrip-space" />
-        <div className="browser-actions">
-          <Button
+        <div className="browser-actions" data-picker-mode={browser.pickerMode}>
+          <IconButton
             ref={pickerTrigger}
-            variant="ghost"
-            size="icon"
-            aria-label={t("allTabs")}
+            label={t("allTabs")}
             aria-haspopup="dialog"
             aria-expanded={browser.pickerOpen && browser.pickerMode === "tabs"}
             onClick={() => void act("tabs-open")}
           >
             <CaretDownIcon />
-          </Button>{" "}
+          </IconButton>
           <IconButton
             label={t("bookmarks")}
             aria-haspopup="dialog"
@@ -449,6 +464,37 @@ function Shell({ state }: { state: LibraryState }) {
           >
             <DownloadSimpleIcon />
           </IconButton>
+          {browser.pickerOpen && browser.pickerMode !== "address" && (
+            <div
+              className="toolbar-panel"
+              data-mode={browser.pickerMode || "tabs"}
+              onPointerDown={(event) => event.stopPropagation()}
+              onKeyDown={(event) => {
+                if (
+                  event.defaultPrevented ||
+                  (event.target as Element).closest('[role="alertdialog"]')
+                )
+                  return;
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  void window.tamkiTabs.action("dismiss");
+                }
+              }}
+              onBlurCapture={(event) => {
+                if (
+                  event.relatedTarget &&
+                  !(event.relatedTarget as Element).closest(
+                    '.browser-actions, [role="alertdialog"]',
+                  )
+                )
+                  void act("tabs-dismiss");
+              }}
+            >
+              <span className="toolbar-panel-cap" aria-hidden="true" />
+              <Picker embedded />
+            </div>
+          )}
         </div>
       </div>
       <main className={cn("content", browser.active === 0 && "home-active")}>

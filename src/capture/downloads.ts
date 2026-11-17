@@ -203,6 +203,8 @@ export class VideoDownloads {
     qualities: number[] = [0],
     groups?: CaptureGroup[],
     metadata?: CaptureMetadata,
+    positions?: ReadonlyMap<string, number>,
+    qualityOverrides?: ReadonlyMap<string, number[]>,
   ) {
     if (this.closed || this.creating) throw new ProviderError("downloadBusy");
     if (
@@ -229,7 +231,12 @@ export class VideoDownloads {
       throw new ProviderError("captureInvalid");
     this.creating = true;
     try {
-      series = series || !!groups || qualities.length > 1;
+      series =
+        series ||
+        !!groups ||
+        qualities.length > 1 ||
+        (!!qualityOverrides &&
+          [...qualityOverrides.values()].some((q) => q.length > 1));
       const destination = await this.options.target(target, name, series);
       if (this.closed) throw new ProviderError("cancelled");
       const resourceGroups = new Map<string, { id: string; index: number }>();
@@ -265,12 +272,18 @@ export class VideoDownloads {
         metadata,
         createdAt: Date.now(),
         items: resources.flatMap((resource, index) =>
-          [...new Set(qualities)].map((quality) => ({
+          [
+            ...new Set(
+              qualityOverrides?.has(resource.id)
+                ? qualityOverrides.get(resource.id)!
+                : qualities,
+            ),
+          ].map((quality) => ({
             id: randomUUID(),
             resource: { ...resource, quality: quality || undefined },
             groupId: resourceGroups.get(resource.id)?.id,
             name: series
-              ? `${String((resourceGroups.get(resource.id)?.index ?? index) + 1).padStart(3, "0")} · ${safeDownloadName(resource.title)}${quality ? ` [${videoQualityLabel(quality)}]` : ""}.mp4`
+              ? `${String((positions?.get(resource.id) ?? resourceGroups.get(resource.id)?.index ?? index) + 1).padStart(3, "0")} · ${safeDownloadName(resource.title)}${quality ? ` [${videoQualityLabel(quality)}]` : ""}.mp4`
               : `${safeDownloadName(name.replace(/\.mp4$/i, ""))}${quality ? ` [${videoQualityLabel(quality)}]` : ""}.mp4`,
             state: "queued",
             stage: "resolving",
@@ -306,9 +319,17 @@ export class VideoDownloads {
       this.creating = false;
     }
   }
-  async remove(id: string, itemId?: string) {
+  async remove(id: string, itemId?: string | string[]) {
     const job = this.jobs.get(id);
-    const items = job?.items.filter((i) => !itemId || i.id === itemId);
+    const selected = itemId
+      ? new Set(Array.isArray(itemId) ? itemId : [itemId])
+      : undefined;
+    if (
+      selected &&
+      [...selected].some((id) => !job?.items.some((i) => i.id === id))
+    )
+      throw new ProviderError("transferUnavailable");
+    const items = job?.items.filter((i) => !selected || selected.has(i.id));
     if (
       !job ||
       !items?.length ||
@@ -342,11 +363,21 @@ export class VideoDownloads {
   command(
     id: string,
     action: "pause" | "resume" | "retry" | "cancel",
-    itemId?: string,
+    itemId?: string | string[],
   ) {
     const job = this.jobs.get(id);
     if (!job) throw new ProviderError("transferUnavailable");
-    const items = itemId ? job.items.filter((i) => i.id === itemId) : job.items;
+    const selected = itemId
+      ? new Set(Array.isArray(itemId) ? itemId : [itemId])
+      : undefined;
+    if (
+      selected &&
+      [...selected].some((id) => !job.items.some((i) => i.id === id))
+    )
+      throw new ProviderError("transferUnavailable");
+    const items = selected
+      ? job.items.filter((i) => selected.has(i.id))
+      : job.items;
     if (!items.length) throw new ProviderError("transferUnavailable");
     logEvent("download.action", {
       jobId: id,

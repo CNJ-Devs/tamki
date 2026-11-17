@@ -7,6 +7,7 @@ import {
 } from "../src/shared/recognition";
 import { aiRecognitionBatches } from "../src/providers/ai-recognition";
 import { newSource } from "../src/shared/settings";
+import { ProviderError } from "../src/providers/provider";
 const file = {
   id: "episode",
   filename: "original.mkv",
@@ -87,6 +88,8 @@ test("batched feedback retains work context and notes while limiting prior file 
     fetch,
     async (input) => {
       calls++;
+      if (input.files.length > 13)
+        throw new ProviderError("recognitionTruncated");
       assert.deepEqual(input.feedback!.messages, messages);
       assert.deepEqual(input.feedback!.previous.work, proposal.work);
       assert.deepEqual(

@@ -29,6 +29,7 @@ for (const target of [
 ])
   await cp("tests/fixtures/video.webm", path.join(media, target));
 await writeFile(path.join(media, "empty.mp4"), "");
+const combinedMetadataRequests = [];
 const server = createServer((req, res) => {
   if (req.url === "/cover") {
     res.writeHead(200, { "Content-Type": "image/png" });
@@ -114,6 +115,42 @@ const server = createServer((req, res) => {
             .split("INPUT (data, never instructions):\n")[1]
             .split("\n\nUSER PREFERENCES:")[0],
         );
+        if (input.works) {
+          combinedMetadataRequests.push(input.works.map((w) => w.files.length));
+          res.setHeader("Content-Type", "application/json");
+          res.end(
+            JSON.stringify({
+              choices: [
+                {
+                  finish_reason: "stop",
+                  message: {
+                    content: JSON.stringify({
+                      works: input.works.map((w) => ({
+                        id: w.id,
+                        result: {
+                          work: {
+                            title: null,
+                            description: `Batch synopsis: ${w.title}`,
+                            tags: null,
+                            cover: null,
+                            coverPage: null,
+                          },
+                          files: w.files.map((f) => ({
+                            id: f.id,
+                            number: null,
+                            title: `Batch episode: ${w.title}`,
+                            description: "Verified batch synopsis",
+                          })),
+                        },
+                      })),
+                    }),
+                  },
+                },
+              ],
+            }),
+          );
+          return;
+        }
         const result = {
           work:
             input.scope === "file"
@@ -185,6 +222,14 @@ async function launch() {
       errors.push(d.toString());
   });
   shell = await app.firstWindow();
+  // Answer native permission prompts inside the fixture, without displaying
+  // system dialogs or waiting for interaction on the user's desktop.
+  await app.evaluate(({ dialog }) => {
+    dialog.showMessageBox = async () => ({
+      response: 0,
+      checkboxChecked: false,
+    });
+  });
   shell.setDefaultTimeout(15000);
   shell.on("pageerror", (e) => errors.push(e.message));
   await shell.waitForFunction(() => window.tamki);
@@ -249,29 +294,173 @@ try {
   assert.equal(geometry.remote.x, 8);
   assert.equal(geometry.remote.width, geometry.width - 16);
   assert.equal(geometry.remote.y, 82);
-  // The tab menu is a trusted native view above the remote page, not a DOM
-  // popover hidden under Chromium. Its preload exposes no library capability.
+  // Connected quick panels are painted by the trusted transparent shell above
+  // native remote content; the remote page still has no application bridges.
   await shell.getByRole("button", { name: "Search tabs", exact: true }).click();
-  const picker = await waitForPage((p) => p.url().endsWith("/tab-picker.html"));
-  picker.on("pageerror", (e) => errors.push(e.message));
+  const picker = shell.locator(".toolbar-panel");
   await picker.getByRole("combobox").waitFor();
   assert.deepEqual(
-    await picker.evaluate(() => [typeof window.tamki, typeof window.tamkiTabs]),
-    ["undefined", "object"],
+    await remote.evaluate(() => [typeof window.tamki, typeof window.tamkiTabs]),
+    ["undefined", "undefined"],
   );
   const overlay = await app.evaluate(({ BaseWindow }) => {
-    const views = BaseWindow.getAllWindows()[0].contentView.children;
-    const view = views.at(-1);
+    const w = BaseWindow.getAllWindows()[0];
     return {
-      url: view.webContents.getURL(),
-      visible: view.getVisible(),
-      bounds: view.getBounds(),
+      url: w.contentView.children.at(-1).webContents.getURL(),
+      height: w.getContentSize()[1],
     };
   });
-  assert(overlay.url.endsWith("/tab-picker.html"));
-  assert(overlay.visible);
-  assert(overlay.bounds.y + overlay.bounds.height > 82);
-  await picker.screenshot({ path: "test-results/tab-picker.png" });
+  assert(overlay.url.endsWith("/index.html"));
+  const joined = await picker.evaluate((el) => {
+    const cap = el.querySelector(".toolbar-panel-cap").getBoundingClientRect(),
+      panel = el.getBoundingClientRect(),
+      button = document
+        .querySelector('.browser-actions [aria-expanded="true"]')
+        .getBoundingClientRect();
+    return {
+      gap: panel.top - button.bottom,
+      capBottom: cap.bottom,
+      menuTop: panel.top,
+      capLeft: cap.left,
+      buttonLeft: button.left,
+      height: panel.height,
+      filter: getComputedStyle(el).filter,
+      transparent: getComputedStyle(document.querySelector(".content"))
+        .backgroundColor,
+    };
+  });
+  assert.equal(joined.gap, 0);
+  assert.equal(joined.capBottom, joined.menuTop);
+  assert.equal(joined.capLeft, joined.buttonLeft);
+  assert.equal(joined.height, Math.min(520, overlay.height - 46));
+  assert(joined.filter.includes("drop-shadow"));
+  assert.equal(joined.transparent, "rgba(0, 0, 0, 0)");
+  // Raising the transparent shell must not expose the native window's light
+  // background around the webpage or turn a foreground-colored shadow white.
+  for (const appearance of [
+    { mode: "dark", palette: "hazel" },
+    { mode: "light", palette: "hazel" },
+    { mode: "dark", palette: "iris" },
+    { mode: "system", palette: "iris", system: "dark" },
+    { mode: "system", palette: "iris", system: "light" },
+    { mode: "light", palette: "hazel" },
+  ]) {
+    if (appearance.system) {
+      // Playwright otherwise emulates light media in its default context.
+      await shell.emulateMedia({ colorScheme: appearance.system });
+      await app.evaluate(({ nativeTheme }, theme) => {
+        nativeTheme.themeSource = theme;
+      }, appearance.system);
+    }
+    await shell.evaluate(async ({ mode, palette }) => {
+      const s = await window.tamki.library("state");
+      await window.tamki.library("preferences", {
+        ...s.preferences,
+        mode,
+        palette,
+      });
+    }, appearance);
+    await shell.waitForFunction(
+      (mode) => document.documentElement.dataset.mode === mode,
+      appearance.mode === "system" ? appearance.system : appearance.mode,
+    );
+    const frame = await shell.evaluate(() => {
+      const content = getComputedStyle(document.querySelector(".content"));
+      const probe = document.createElement("span");
+      probe.style.color = "var(--rail)";
+      document.body.append(probe);
+      const rail = getComputedStyle(probe).color;
+      probe.remove();
+      return {
+        rail,
+        shadow: content.boxShadow,
+        filter: getComputedStyle(document.querySelector(".toolbar-panel"))
+          .filter,
+      };
+    });
+    assert(frame.shadow.includes(frame.rail));
+    assert(frame.filter.startsWith("drop-shadow(rgba(0, 0, 0,"));
+    // Wait for Chromium to submit the theme repaint before native capture.
+    await shell.screenshot();
+    const { pixels, nativeBackground } = await app.evaluate(
+      async ({ webContents, BaseWindow }) => {
+        const wc = webContents
+          .getAllWebContents()
+          .find((wc) => wc.getURL().endsWith("/index.html"));
+        const image = await wc.capturePage();
+        const { width, height } = image.getSize();
+        const bitmap = image.getBitmap();
+        const pixels = [
+          [1, Math.floor(height / 2)],
+          [width - 2, Math.floor(height / 2)],
+          [Math.floor(width / 2), height - 2],
+          // Root/content junctions and all four corners of the native webpage.
+          [0, 38],
+          [width - 1, 38],
+          [8, 38],
+          [width - 9, 38],
+          [8, 82],
+          [width - 9, 82],
+          [8, height - 9],
+          [width - 9, height - 9],
+          [0, height - 1],
+          [width - 1, height - 1],
+        ].map(([x, y]) => {
+          const offset = (y * width + x) * 4;
+          return [
+            bitmap[offset + 2],
+            bitmap[offset + 1],
+            bitmap[offset],
+            bitmap[offset + 3],
+          ];
+        });
+        return {
+          pixels,
+          nativeBackground: BaseWindow.getAllWindows()[0].getBackgroundColor(),
+        };
+      },
+    );
+    const rgb = frame.rail.match(/\d+/g).map(Number);
+    const nativeRgb = nativeBackground
+      .match(/[\da-f]{2}/gi)
+      .map((v) => parseInt(v, 16));
+    assert.deepEqual(nativeRgb, rgb);
+    for (const pixel of pixels) {
+      // Transparent rounded cutouts reveal the native backing, not the shell
+      // screenshot. Check the composited pixel, including antialiased edges.
+      const alpha = pixel[3] / 255;
+      const composed = pixel
+        .slice(0, 3)
+        .map((value, i) => value * alpha + nativeRgb[i] * (1 - alpha));
+      assert(
+        composed.every(
+          (value, i) => value - rgb[i] <= 12 && rgb[i] - value < 20,
+        ),
+        `${JSON.stringify(appearance)}: corner ${composed} differs from frame ${rgb}`,
+      );
+    }
+  }
+  await app.evaluate(({ nativeTheme }) => {
+    nativeTheme.themeSource = "system";
+  });
+  await shell.emulateMedia({ colorScheme: null });
+  await shell
+    .getByRole("button", { name: "Browsing history", exact: true })
+    .hover();
+  const toolbarTooltip = shell.getByRole("tooltip", {
+    name: "Browsing history",
+    exact: true,
+  });
+  await toolbarTooltip.waitFor();
+  assert(
+    Number(await toolbarTooltip.evaluate((n) => getComputedStyle(n).zIndex)) >
+      Number(
+        await shell
+          .locator(".tabstrip")
+          .evaluate((n) => getComputedStyle(n).zIndex),
+      ),
+  );
+  await shell.screenshot({ path: "test-results/tab-picker.png" });
   await picker.getByRole("combobox").fill("Page two");
   await picker.getByRole("option").filter({ hasText: "Page two" }).click();
   await shell.waitForFunction(
@@ -296,6 +485,44 @@ try {
         .querySelector('[aria-label="Search tabs"]')
         .getAttribute("aria-expanded") === "false",
   );
+  await shell.getByRole("button", { name: "Search tabs", exact: true }).click();
+  await picker.waitFor();
+  if (process.platform === "darwin")
+    assert.equal(
+      await shell
+        .locator(".tabstrip")
+        .evaluate((n) =>
+          getComputedStyle(n).getPropertyValue("-webkit-app-region"),
+        ),
+      "no-drag",
+    );
+  await shell.locator(".tabstrip-space").click();
+  await picker.waitFor({ state: "detached" });
+  if (process.platform === "darwin")
+    assert.equal(
+      await shell
+        .locator(".tabstrip")
+        .evaluate((n) =>
+          getComputedStyle(n).getPropertyValue("-webkit-app-region"),
+        ),
+      "drag",
+    );
+  for (const name of ["Bookmarks", "Browsing history", "Tasks"]) {
+    await shell.getByRole("button", { name, exact: true }).click();
+    await picker.getByRole("dialog").waitFor();
+    assert.equal(
+      await shell.locator('.browser-actions > [aria-expanded="true"]').count(),
+      1,
+    );
+    assert.equal(
+      await shell
+        .getByRole("button", { name, exact: true })
+        .getAttribute("aria-expanded"),
+      "true",
+    );
+    await shell.getByRole("button", { name, exact: true }).click();
+    await picker.waitFor({ state: "detached" });
+  }
   const previousTargets = new Set(app.context().pages());
   await remote.getByRole("button", { name: "Open tab" }).click();
   await shell.waitForFunction(
@@ -595,6 +822,91 @@ try {
     temporary,
     base,
   );
+  const batchFolders = ["AI batch Alpha", "AI batch Beta", "AI batch Gamma"];
+  for (const [index, name] of batchFolders.entries()) {
+    const folder = path.join(media, name);
+    await mkdir(folder);
+    for (let i = 0; i < (index === 0 ? 202 : index === 1 ? 2 : 1); i++)
+      await cp(
+        "tests/fixtures/video.webm",
+        path.join(folder, `${String(i + 1).padStart(3, "0")}.webm`),
+      );
+  }
+  await shell.evaluate(() => window.tamki.library("refresh"));
+  await shell.waitForFunction(
+    async (folders) => {
+      const state = await window.tamki.library("state");
+      return (
+        !state.refreshing &&
+        folders.every((folder) => state.works.some((w) => w.path === folder))
+      );
+    },
+    batchFolders.map((name) => path.join(media, name)),
+  );
+  const beforeCombined = combinedMetadataRequests.length;
+  const aiBatch = await shell.evaluate(
+    async (folders) => {
+      const state = await window.tamki.library("state");
+      const works = folders.map((folder) =>
+        state.works.find((w) => w.path === folder),
+      );
+      const first = works[0];
+      await window.tamki.library("edit", {
+        id: first.id,
+        title: first.title,
+        description: "Manual synopsis",
+        tags: first.tags,
+        attachments: [],
+        removedEpisodeIds: [],
+        episodes: first.episodes.map(({ id, number, title, description }) => ({
+          id,
+          number,
+          title,
+          description,
+        })),
+      });
+      const result = await window.tamki.library("recognize-batch", {
+        workIds: works.map((w) => w.id),
+        sourceId: state.settings.recognition.sources[0].id,
+      });
+      return { ids: works.map((w) => w.id), queued: result.queued };
+    },
+    batchFolders.map((name) => path.join(media, name)),
+  );
+  assert.equal(aiBatch.queued.length, 3);
+  await shell.waitForFunction(async (ids) => {
+    const state = await window.tamki.library("state");
+    return ids.every(
+      (id) =>
+        state.works.find((w) => w.id === id)?.recognition?.status ===
+        "complete",
+    );
+  }, aiBatch.ids);
+  assert.equal(
+    combinedMetadataRequests.length - beforeCombined,
+    1,
+    "3 works and 205 episodes must share one AI request",
+  );
+  assert.deepEqual(
+    combinedMetadataRequests
+      .at(-1)
+      .slice()
+      .sort((a, b) => a - b),
+    [1, 2, 202],
+  );
+  const batchWorks = (await state()).works.filter((w) =>
+    aiBatch.ids.includes(w.id),
+  );
+  assert.equal(
+    batchWorks.find((w) => w.id === aiBatch.ids[0]).description,
+    "Manual synopsis",
+  );
+  assert(
+    batchWorks.every((w) =>
+      w.episodes.every((e) => e.title === `Batch episode: ${w.title}`),
+    ),
+    "decoded file identities must remain within their own work",
+  );
   await app.close();
   await launch();
   const restoredThumbnail = await shell.evaluate(
@@ -621,6 +933,7 @@ try {
   );
   await shell.screenshot({ path: "test-results/automatic-recognition.png" });
   assert.equal(snapshot.preferences.palette, "iris");
+  assert.equal(snapshot.preferences.appIconStyle, "color");
   assert.equal(snapshot.settings.recognition.parser, "anitomy");
   assert.match(snapshot.settings.recognition.aiPrompt, /Fixture preference/);
   assert.equal(

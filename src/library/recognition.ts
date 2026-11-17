@@ -1,4 +1,9 @@
-import { observedFetch, traced, logEvent } from "../diagnostics";
+import {
+  observedFetch,
+  traced,
+  logEvent,
+  diagnosticError,
+} from "../diagnostics";
 import { net } from "electron";
 import {
   recognitionRequestSchema,
@@ -10,12 +15,19 @@ import type { Episode } from "../shared/model";
 import type { LibraryStore } from "./store";
 import type { SettingsService } from "./settings";
 import { builtinRecognition } from "../providers/metadata";
-import { aiRecognitionBatches } from "../providers/ai-recognition";
+import { bilibiliRecognition } from "../providers/bilibili-metadata";
+import {
+  aiRecognitionBatches,
+  aiStructured,
+  type StructuredTask,
+} from "../providers/ai-recognition";
+import { MetadataBatchPool, recognizeMany } from "../providers/metadata-batch";
 import { parseFilename } from "./filename";
 import { ProviderError } from "../providers/provider";
 import type { ArtworkCache } from "./artwork";
 export class RecognitionService {
   private jobs = new Map<string, AbortController>();
+  private batches = new MetadataBatchPool();
   constructor(
     private store: LibraryStore,
     private settings: SettingsService,
@@ -81,6 +93,13 @@ export class RecognitionService {
             filename: file.fileName,
             duration: file.duration,
             order: order + 1,
+            ...(request.batch
+              ? {
+                  missing: (["number", "title", "description"] as const).filter(
+                    (field) => !e[field],
+                  ),
+                }
+              : {}),
             ...(file.versions && file.versions.length > 1
               ? {
                   versions: file.versions.map((v) => ({
@@ -101,6 +120,14 @@ export class RecognitionService {
         title: request.query,
         scope: request.scope,
         files,
+        ...(request.batch
+          ? {
+              missing: (["description", "tags", "cover"] as const).filter(
+                (field) =>
+                  field === "tags" ? !work.tags.length : !work[field],
+              ),
+            }
+          : {}),
       };
       if (request.feedback) {
         if (!source || request.candidate)
@@ -128,6 +155,14 @@ export class RecognitionService {
             }),
           },
         };
+      } else if (request.sourceId === "bilibili") {
+        response = await bilibiliRecognition(
+          input,
+          request.candidate,
+          config.parser,
+          controller.signal,
+          observedFetch(net.fetch.bind(net) as typeof fetch),
+        );
       } else if (
         request.sourceId === "bangumi" ||
         request.sourceId === "tmdb"
@@ -147,26 +182,55 @@ export class RecognitionService {
       } else {
         if (!source) throw new ProviderError("recognitionSourceMissing");
         const runtime = this.settings.recognitionRuntime(source);
-        response = ["gemini-oauth", "claude-code"].includes(source.provider)
-          ? await this.settings.accounts.recognize(
-              runtime,
-              input,
-              config.aiPrompt,
-              controller.signal,
-            )
-          : await aiRecognitionBatches(
-              runtime,
-              source.provider === "openai-oauth"
-                ? "oauth-managed"
-                : this.settings.secret(runtime.id, "key"),
-              this.settings.secret(source.id, "search"),
-              input,
-              config.aiPrompt,
-              controller.signal,
-              source.provider === "openai-oauth"
-                ? this.settings.oauth.request(runtime.id)
-                : observedFetch(net.fetch.bind(net) as typeof fetch),
-            );
+        const managed = ["gemini-oauth", "claude-code"].includes(
+          source.provider,
+        );
+        const requestAI =
+          source.provider === "openai-oauth"
+            ? this.settings.oauth.request(runtime.id)
+            : observedFetch(net.fetch.bind(net) as typeof fetch);
+        const key =
+          source.provider === "openai-oauth"
+            ? "oauth-managed"
+            : this.settings.secret(runtime.id, "key");
+        const searchKey = this.settings.secret(source.id, "search");
+        const single = (part: RecognitionInput, signal: AbortSignal) =>
+          managed
+            ? this.settings.accounts.recognize(
+                runtime,
+                part,
+                config.aiPrompt,
+                signal,
+              )
+            : aiRecognitionBatches(
+                runtime,
+                key,
+                searchKey,
+                part,
+                config.aiPrompt,
+                signal,
+                requestAI,
+              );
+        const structured = (task: StructuredTask, signal: AbortSignal) =>
+          managed
+            ? this.settings.accounts.structured(runtime, task, signal)
+            : aiStructured(runtime, key, searchKey, task, signal, requestAI);
+        response =
+          request.batch && request.scope === "work"
+            ? await this.batches.submit(
+                JSON.stringify([request.sourceId, runtime, config.aiPrompt]),
+                input,
+                controller.signal,
+                (inputs, signal) =>
+                  recognizeMany(
+                    inputs,
+                    config.aiPrompt,
+                    signal,
+                    structured,
+                    single,
+                  ),
+              )
+            : await single(input, controller.signal);
       }
       controller.signal.throwIfAborted();
       if (response.kind === "result") {
@@ -182,12 +246,12 @@ export class RecognitionService {
               response.result.work.coverPage,
               controller.signal,
             );
-          } catch {
+          } catch (error) {
             response.result.work.cover = null;
             response.artworkError = true;
             logEvent(
               "recognition.artwork.failed",
-              { reason: "unavailable" },
+              { reason: "unavailable", ...diagnosticError(error) },
               "warn",
             );
           }

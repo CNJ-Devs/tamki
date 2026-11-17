@@ -14,6 +14,7 @@ export const organizeRequestSchema = z
       .max(100),
     webSearch: z.boolean(),
     instructions: z.string().trim().max(2000),
+    mode: z.enum(["incremental", "full"]).optional(),
   })
   .strict();
 export type OrganizeRequest = z.infer<typeof organizeRequestSchema>;
@@ -38,6 +39,14 @@ export interface OrganizationDirectory {
   scanned: boolean;
 }
 export interface OrganizationContext {
+  relationshipEdits?: {
+    id: string;
+    kind: "series" | "collection";
+    action: "saved" | "removed";
+    name: string;
+    workIds: string[];
+    updatedAt: number;
+  }[];
   works: {
     id: string;
     title: string;
@@ -155,6 +164,7 @@ export interface OrganizationGroup {
   reason: string;
   /** Existing membership within the selected scope is unchanged. */
   existingWorkId?: string;
+  referenceOnly?: boolean;
   changes?: {
     previousTitles: string[];
     title: boolean;
@@ -164,8 +174,49 @@ export interface OrganizationGroup {
     versions?: boolean;
   };
 }
+export type OrganizationReviewedFile = OrganizationFile;
+export interface OrganizationDelta {
+  mode: "incremental" | "full";
+  reviewedAt?: number;
+  totalFiles: number;
+  unchangedFiles: number;
+  pendingFiles: number;
+  added: OrganizationFile[];
+  modified: OrganizationFile[];
+  removed: OrganizationReviewedFile[];
+}
+export interface OrganizationLiveChanges {
+  blocked: boolean;
+  changedWorkIds: string[];
+  added: { id: string; path: string; connectionId: string }[];
+  removed: { id: string; path: string; connectionId: string }[];
+  modified: { id: string; path: string; connectionId: string }[];
+  conflictingGroupIds: string[];
+  deferredRemovalIds: string[];
+}
+export interface OrganizationRelationshipRemoval {
+  id: string;
+  kind: "series" | "collection";
+  name: string;
+  workIds: string[];
+  seriesIds?: string[];
+}
 export interface OrganizationPlan {
+  relationshipRemovals?: OrganizationRelationshipRemoval[];
+  /** Explicit reviewed index exclusions; source media is preserved. */
+  fileExclusions?: string[];
   jobId: string;
+  delta?: OrganizationDelta;
+  liveChanges?: OrganizationLiveChanges;
+  reviewSelection?: {
+    groups: string[];
+    collections: string[];
+    names: Record<string, string>;
+    acknowledgedRemovals?: string[];
+    relationshipRemovals?: string[];
+    fileExclusions?: string[];
+  };
+  scopes?: { connectionId: string; path: string; depth: number }[];
   files: OrganizationFile[];
   groups: OrganizationGroup[];
   collections: (z.infer<
@@ -190,6 +241,7 @@ export interface OrganizationProgress {
   completed: number;
   total: number;
   files?: number;
+  changes?: OrganizationLiveChanges;
 }
 export const organizationApplySchema = z
   .object({
@@ -198,9 +250,23 @@ export const organizationApplySchema = z
       .array(
         z.object({ id, title: z.string().trim().min(1).max(500) }).strict(),
       )
-      .min(1)
-      .max(2000),
+      .max(organizationFileLimit),
     collectionIds: z.array(id).max(200),
+    fileExclusionIds: z
+      .array(id)
+      .max(organizationFileLimit)
+      .refine((ids) => new Set(ids).size === ids.length)
+      .optional(),
+    relationshipRemovalIds: z
+      .array(id)
+      .max(200)
+      .refine((ids) => new Set(ids).size === ids.length)
+      .optional(),
+    acknowledgedRemovals: z
+      .array(id)
+      .max(organizationFileLimit)
+      .refine((ids) => new Set(ids).size === ids.length)
+      .optional(),
   })
   .strict();
 export type OrganizationApply = z.infer<typeof organizationApplySchema>;
@@ -330,3 +396,33 @@ export function organizationMembers(
     return [{ id: s.id, kind: "series" as const, groupIds: s.groupIds }];
   });
 }
+
+export const organizationReviewSelectionSchema = z
+  .object({
+    fileExclusions: z
+      .array(id)
+      .max(organizationFileLimit)
+      .refine((ids) => new Set(ids).size === ids.length)
+      .optional(),
+    relationshipRemovals: z
+      .array(id)
+      .max(200)
+      .refine((ids) => new Set(ids).size === ids.length)
+      .optional(),
+    jobId: id,
+    groups: z
+      .array(id)
+      .max(organizationFileLimit)
+      .refine((ids) => new Set(ids).size === ids.length),
+    collections: z
+      .array(id)
+      .max(200)
+      .refine((ids) => new Set(ids).size === ids.length),
+    names: z.record(id, z.string().trim().min(1).max(500)),
+    acknowledgedRemovals: z
+      .array(id)
+      .max(organizationFileLimit)
+      .refine((ids) => new Set(ids).size === ids.length)
+      .optional(),
+  })
+  .strict();

@@ -1,7 +1,14 @@
 // Isolated hidden Electron window; all site/API/media requests are local fixtures.
 import { _electron as electron } from "playwright";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, realpath, readFile, rm } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  realpath,
+  readFile,
+  readdir,
+  rm,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -244,10 +251,30 @@ try {
               code: 0,
               data: {
                 timelength: 2000,
-                quality: 80,
+                quality:
+                  globalThis.__capturePgc && u.searchParams.get("cid") !== "602"
+                    ? 112
+                    : 80,
+                accept_quality:
+                  globalThis.__capturePgc && u.searchParams.get("cid") !== "602"
+                    ? [112, 80]
+                    : [80],
+                accept_description:
+                  globalThis.__capturePgc && u.searchParams.get("cid") !== "602"
+                    ? ["1080P+", "1080P"]
+                    : ["1080P"],
                 has_paid: false,
                 dash: {
-                  video: [globalThis.__captureDash.streams[0]],
+                  video: [
+                    ...(globalThis.__capturePgc &&
+                    u.searchParams.get("cid") !== "602"
+                      ? [{ ...globalThis.__captureDash.streams[0], id: 112 }]
+                      : []),
+                    globalThis.__captureDash.streams[0],
+                    ...(globalThis.__capturePgc
+                      ? [{ ...globalThis.__captureDash.streams[0], id: 64 }]
+                      : []),
+                  ],
                   audio: [globalThis.__captureDash.streams[1]],
                 },
               },
@@ -374,9 +401,7 @@ try {
     .getByRole("button", { name: "Download 2 videos", exact: true })
     .click();
   await shell.evaluate(() => window.tamki.action("tasks-open"));
-  const controls = await findPage(async (page) =>
-    page.url().includes("tab-picker.html"),
-  );
+  const controls = shell.locator(".toolbar-panel");
   await controls.getByRole("button", { name: "Pause", exact: true }).click();
   await controls
     .getByRole("button", { name: "Resume task", exact: true })
@@ -389,6 +414,33 @@ try {
   await controls
     .getByRole("button", { name: "Expand task", exact: true })
     .click();
+  await controls
+    .getByRole("checkbox", {
+      name: "Select all videos in this list",
+      exact: true,
+    })
+    .check();
+  await controls
+    .getByRole("button", { name: "Resume selected", exact: true })
+    .click();
+  await controls
+    .getByRole("button", { name: "Pause selected", exact: true })
+    .click();
+  await waitForAsync(shell, async () =>
+    (await window.tamki.library("state")).videoDownloads[0].items.every(
+      (i) => i.state === "paused",
+    ),
+  );
+  await settlePanel(shell);
+  await controls.screenshot({
+    path: "test-results/download-batch-actions.png",
+  });
+  await controls
+    .getByRole("checkbox", {
+      name: "Select all videos in this list",
+      exact: true,
+    })
+    .uncheck();
   await controls
     .locator(".download-task-item")
     .first()
@@ -577,9 +629,7 @@ try {
     1,
   );
   await shell.evaluate(() => window.tamki.action("tasks-open"));
-  const quick = await findPage(async (page) =>
-    page.url().includes("tab-picker.html"),
-  );
+  const quick = shell.locator(".toolbar-panel");
   await quick.getByRole("button", { name: "View all tasks" }).waitFor();
   await quick.getByText("Fixture series", { exact: true }).waitFor();
   const expand = quick.getByRole("button", {
@@ -595,7 +645,7 @@ try {
   );
   const toolbar = await shell.locator(".browser-actions").evaluate((el) => ({
     gap: getComputedStyle(el).gap,
-    buttons: [...el.querySelectorAll("button")].map((b) => ({
+    buttons: [...el.querySelectorAll(":scope > button")].map((b) => ({
       label: b.getAttribute("aria-label"),
       width: b.getBoundingClientRect().width,
       height: b.getBoundingClientRect().height,
@@ -605,7 +655,7 @@ try {
   assert.equal(toolbar.gap, "4px");
   assert.deepEqual(
     toolbar.buttons.map((b) => b.label),
-    ["Search tabs", "Browsing history", "Tasks"],
+    ["Search tabs", "Bookmarks", "Browsing history", "Tasks"],
   );
   for (const button of toolbar.buttons) {
     assert.equal(button.width, 32);
@@ -614,7 +664,7 @@ try {
   }
   assert.equal(
     await shell
-      .locator('.browser-actions button[aria-expanded="true"]')
+      .locator('.browser-actions > button[aria-expanded="true"]')
       .getAttribute("aria-label"),
     "Tasks",
   );
@@ -653,7 +703,7 @@ try {
     .getByRole("button", { name: "Tasks", exact: true })
     .click();
   await quick.getByRole("button", { name: "View all tasks" }).waitFor();
-  await quick.waitForTimeout(350);
+  await shell.waitForTimeout(350);
   await quick.screenshot({ path: "test-results/capture-quick-tasks.png" });
   await shell
     .locator(".browser-actions")
@@ -662,7 +712,7 @@ try {
   await quick.getByRole("dialog", { name: "Browsing history" }).waitFor();
   assert.equal(
     await shell
-      .locator('.browser-actions button[aria-expanded="true"]')
+      .locator('.browser-actions > button[aria-expanded="true"]')
       .getAttribute("aria-label"),
     "Browsing history",
   );
@@ -691,7 +741,7 @@ try {
     .getByRole("button", { name: "Remove task", exact: true })
     .first()
     .click();
-  await quick
+  await shell
     .getByRole("alertdialog", { name: "Remove task", exact: true })
     .getByRole("button", { name: "Remove task", exact: true })
     .click();
@@ -771,8 +821,230 @@ try {
   });
   await familyForm.waitFor();
   assert.equal(
-    await familyForm.locator(".capture-download-hierarchy > div").count(),
+    await familyForm
+      .locator(".capture-choice-list > .capture-choice-group")
+      .count(),
     2,
+  );
+  await familyForm
+    .getByRole("checkbox", { name: "Select all", exact: true })
+    .uncheck();
+  assert(
+    await familyForm
+      .getByRole("button", { name: "Download 0 videos", exact: true })
+      .isDisabled(),
+  );
+  await familyForm
+    .getByRole("checkbox", { name: "Select all", exact: true })
+    .check();
+  await familyForm
+    .getByRole("button", { name: "Expand episodes", exact: true })
+    .first()
+    .click();
+  await familyForm
+    .getByRole("checkbox", { name: "1 · Episode 1", exact: true })
+    .uncheck();
+  assert.equal(
+    await familyForm
+      .getByRole("checkbox", { name: "Fixture television · TV", exact: true })
+      .getAttribute("aria-checked"),
+    "mixed",
+  );
+  assert.equal(
+    await familyForm
+      .getByRole("checkbox", { name: "Select all", exact: true })
+      .getAttribute("aria-checked"),
+    "false",
+  );
+  assert(
+    await familyForm
+      .getByRole("button", { name: "Download 2 videos", exact: true })
+      .isEnabled(),
+  );
+  await familyForm
+    .getByRole("checkbox", { name: "Select all", exact: true })
+    .check();
+  const invalidSelection = await panel.evaluate(async () => {
+    const draft = (await window.tamkiCapture.action("state")).draft;
+    try {
+      await window.tamkiCapture.action("submit", {
+        draftId: draft.id,
+        name: "Forged selection",
+        target: draft.target,
+        resourceIds: ["not-in-the-draft"],
+      });
+      return "accepted";
+    } catch (error) {
+      return error.message;
+    }
+  });
+  assert.equal(invalidSelection, "captureChanged");
+  await waitForAsync(
+    panel,
+    async () =>
+      Object.keys(
+        (await window.tamkiCapture.action("state")).draft.itemQualities || {},
+      ).length === 3,
+  );
+  await familyForm.getByRole("button", { name: "1080P+", exact: true }).click();
+  await waitForAsync(panel, async () => {
+    const draft = (await window.tamkiCapture.action("state")).draft;
+    return (
+      !draft.qualityChecking &&
+      Object.keys(draft.itemQualities || {}).length === 3
+    );
+  });
+  assert(
+    await familyForm
+      .getByRole("button", { name: "Download 3 videos", exact: true })
+      .isDisabled(),
+  );
+  assert.equal(
+    await familyForm.getByLabel("1080P+ unavailable", { exact: true }).count(),
+    1,
+  );
+  assert.equal(
+    await familyForm
+      .getByRole("button", { name: "Check selected videos", exact: true })
+      .count(),
+    0,
+  );
+  await app.evaluate(({ BaseWindow }) =>
+    BaseWindow.getAllWindows()[0].setSize(1100, 900),
+  );
+  await settlePanel(panel);
+  await familyForm.locator(".modal-body").evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  await familyForm.screenshot({
+    path: "test-results/download-missing-quality.png",
+  });
+  const globalQuality = familyForm.getByRole("button", {
+    name: "Global quality",
+    exact: true,
+  });
+  const contentSection = familyForm.getByRole("button", {
+    name: "Download contents",
+    exact: true,
+  });
+  assert(
+    (await globalQuality.boundingBox()).y <
+      (await contentSection.boundingBox()).y,
+  );
+  const nameBox = await familyForm.locator("#capture-name").boundingBox();
+  const targetBox = await familyForm
+    .locator(".save-target-control")
+    .boundingBox();
+  assert(
+    nameBox.y < targetBox.y &&
+      targetBox.y < (await globalQuality.boundingBox()).y,
+  );
+  assert((await familyForm.boundingBox()).height > 700);
+  await app.evaluate(({ BaseWindow }) =>
+    BaseWindow.getAllWindows()[0].setSize(1100, 600),
+  );
+  await settlePanel(panel);
+  const scrolling = await familyForm.evaluate((dialog) =>
+    [...dialog.querySelectorAll("*")]
+      .filter(
+        (el) =>
+          ["auto", "scroll"].includes(getComputedStyle(el).overflowY) &&
+          el.scrollHeight > el.clientHeight + 1,
+      )
+      .map((el) => el.className),
+  );
+  assert.equal(scrolling.length, 1);
+  assert.match(scrolling[0], /modal-body/);
+  const footerY = (await familyForm.locator(".modal-footer").boundingBox()).y;
+  await familyForm.locator(".modal-body").evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+  assert.equal(
+    (await familyForm.locator(".modal-footer").boundingBox()).y,
+    footerY,
+  );
+  await familyForm.screenshot({
+    path: "test-results/download-single-scroll.png",
+  });
+  await app.evaluate(({ BaseWindow }) =>
+    BaseWindow.getAllWindows()[0].setSize(1100, 900),
+  );
+  await settlePanel(panel);
+  await familyForm.locator(".modal-body").evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  await globalQuality.hover();
+  assert.equal(
+    await globalQuality.evaluate((el) => getComputedStyle(el).backgroundColor),
+    "rgba(0, 0, 0, 0)",
+  );
+  await globalQuality.click();
+  await contentSection.click();
+  await settlePanel(panel);
+  assert.equal(await globalQuality.getAttribute("aria-expanded"), "false");
+  assert.equal(await contentSection.getAttribute("aria-expanded"), "false");
+  assert.equal(
+    await familyForm
+      .getByRole("combobox", {
+        name: "Episode quality · 2 · Episode 2",
+        exact: true,
+      })
+      .count(),
+    0,
+  );
+  assert.match(await familyForm.innerText(), /Adjust quality for 1 videos/);
+  await familyForm.screenshot({
+    path: "test-results/download-sections-collapsed.png",
+  });
+  await globalQuality.click();
+  await contentSection.click();
+  await familyForm
+    .getByRole("combobox", {
+      name: "Episode quality · 2 · Episode 2",
+      exact: true,
+    })
+    .click();
+  const episodePopover = panel.getByRole("dialog", {
+    name: "Episode quality · 2 · Episode 2",
+    exact: true,
+  });
+  assert.equal(
+    await episodePopover
+      .getByRole("checkbox")
+      .first()
+      .getAttribute("aria-checked"),
+    "true",
+  );
+  assert.match(
+    await episodePopover.getByRole("checkbox").first().getAttribute("id"),
+    /inherit$/,
+  );
+  await episodePopover
+    .getByRole("checkbox", { name: "1080P", exact: true })
+    .check();
+  await episodePopover
+    .getByRole("checkbox", { name: "720P", exact: true })
+    .check();
+  assert.equal(
+    await episodePopover
+      .getByRole("checkbox")
+      .first()
+      .getAttribute("aria-checked"),
+    "false",
+  );
+  await panel.screenshot({
+    path: "test-results/download-episode-quality-multiselect.png",
+  });
+  await familyForm
+    .getByRole("combobox", {
+      name: "Episode quality · 2 · Episode 2",
+      exact: true,
+    })
+    .click();
+  assert(
+    await familyForm
+      .getByRole("button", { name: "Download 4 videos", exact: true })
+      .isEnabled(),
   );
   await familyForm.locator("#capture-name").fill("Fixture family download");
   await settlePanel(panel);
@@ -780,7 +1052,7 @@ try {
     path: "test-results/capture-series-download.png",
   });
   await familyForm
-    .getByRole("button", { name: "Download 3 videos", exact: true })
+    .getByRole("button", { name: "Download 4 videos", exact: true })
     .click();
   await waitForAsync(
     shell,
@@ -790,7 +1062,7 @@ try {
         (j) => j.name === "Fixture family download",
       );
       return (
-        job?.items.length === 3 &&
+        job?.items.length === 4 &&
         job.items.every((i) => i.state === "completed" && i.episodeId) &&
         job.librarySeriesCreated
       );
@@ -803,6 +1075,10 @@ try {
     (j) => j.name === "Fixture family download",
   );
   assert.equal(familyJob.groups.length, 2);
+  assert.deepEqual(
+    familyJob.items.map((i) => i.resource.quality),
+    [112, 80, 64, 112],
+  );
   assert.equal(
     new Set(familyJob.items.map((i) => path.dirname(i.path))).size,
     2,
@@ -813,7 +1089,7 @@ try {
   );
   assert.deepEqual(
     familyJob.items.map((i) => i.name.slice(0, 3)),
-    ["001", "002", "001"],
+    ["001", "002", "002", "001"],
   );
   assert.equal(
     familyJob.groups[0].metadata.description,
@@ -847,6 +1123,55 @@ try {
   );
   assert.equal(imported.flatMap((w) => w.episodes).length, 3);
   assert.equal(await app.evaluate(() => globalThis.__artworkRequests), 5);
+  await reel.getByRole("button", { name: "Page videos", exact: true }).click();
+  await panel
+    .getByRole("button", { name: "Download series", exact: true })
+    .click();
+  const partialForm = panel.getByRole("dialog", {
+    name: "Download all",
+    exact: true,
+  });
+  await app.evaluate(({ BaseWindow }) =>
+    BaseWindow.getAllWindows()[0].setSize(1100, 900),
+  );
+  await partialForm.locator("#capture-name").fill("Fixture partial family");
+  await partialForm
+    .getByRole("checkbox", { name: "Fixture film · Film", exact: true })
+    .uncheck();
+  await partialForm
+    .getByRole("button", { name: "Expand episodes", exact: true })
+    .first()
+    .click();
+  await partialForm
+    .getByRole("checkbox", { name: "1 · Episode 1", exact: true })
+    .uncheck();
+  await settlePanel(panel);
+  await partialForm.locator(".modal-body").evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  await partialForm.screenshot({
+    path: "test-results/capture-download-selection.png",
+  });
+  await partialForm
+    .getByRole("button", { name: "Download 1 videos", exact: true })
+    .click();
+  await waitForAsync(shell, async () => {
+    const job = (await window.tamki.library("state")).videoDownloads.find(
+      (j) => j.name === "Fixture partial family",
+    );
+    return (
+      job?.items.length === 1 &&
+      job.items[0].state === "completed" &&
+      job.items[0].episodeId
+    );
+  });
+  const partialJob = (
+    await shell.evaluate(() => window.tamki.library("state"))
+  ).videoDownloads.find((j) => j.name === "Fixture partial family");
+  assert.equal(partialJob.groups.length, 1);
+  assert.equal(partialJob.items[0].resource.episodeId, 9002);
+  assert(partialJob.items[0].name.startsWith("002"));
+  assert.equal((await readdir(partialJob.target.path)).length, 1);
   await app.evaluate(() => {
     globalThis.__capturePgcExtras = true;
   });
@@ -889,6 +1214,48 @@ try {
     1,
   );
   await panel.getByRole("button", { name: "Cancel", exact: true }).click();
+  await reel.getByRole("button", { name: "Page videos", exact: true }).click();
+  await panel
+    .locator(".capture-menu-content > .capture-group")
+    .first()
+    .getByRole("button", { name: "Download all", exact: true })
+    .first()
+    .click();
+  const sectionForm = panel.getByRole("dialog", {
+    name: "Download all",
+    exact: true,
+  });
+  await sectionForm
+    .getByRole("checkbox", { name: "Extras", exact: true })
+    .uncheck();
+  assert(
+    await sectionForm
+      .getByRole("button", { name: "Download 2 videos", exact: true })
+      .isEnabled(),
+  );
+  await settlePanel(panel);
+  await sectionForm.locator(".modal-body").evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  const previewPreferences = (
+    await shell.evaluate(() => window.tamki.library("state"))
+  ).preferences;
+  await shell.evaluate(
+    (preferences) =>
+      window.tamki.library("preferences", { ...preferences, language: "zh" }),
+    previewPreferences,
+  );
+  await panel.getByRole("checkbox", { name: "全选", exact: true }).waitFor();
+  await panel.locator(".download-modal").screenshot({
+    path: "test-results/capture-download-sections-selection.png",
+  });
+  await shell.evaluate(
+    (preferences) => window.tamki.library("preferences", preferences),
+    previewPreferences,
+  );
+  await sectionForm
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
   await app.evaluate(() => {
     globalThis.__capturePgcBroken = true;
   });

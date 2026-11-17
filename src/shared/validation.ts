@@ -11,6 +11,7 @@ export const preferencesSchema = z
     palette: z.enum(["hazel", "forest", "mist", "iris", "rose", "lagoon"]),
     mode: z.enum(["light", "dark", "system"]),
     refreshOnOpen: z.boolean(),
+    appIconStyle: z.enum(["default", "light", "color"]).optional(),
   })
   .strict();
 export const connectionSchema = z

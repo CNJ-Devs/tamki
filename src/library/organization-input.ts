@@ -64,6 +64,7 @@ export class OrganizationInput {
   readonly references = new Map<string, string[]>();
   readonly fileRefs = new Map<string, string>();
   readonly workRefs = new Map<string, string>();
+  readonly anchors = new Set<string>();
   readonly directories: DirectoryRow[] = [];
   readonly rows: FileRow[] = [];
   private directoryRefs = new Map<string, string>();
@@ -72,6 +73,7 @@ export class OrganizationInput {
     directories: OrganizationDirectory[],
     readonly current: OrganizationContext,
     readonly scopes: { connectionId: string; path: string; depth: number }[],
+    readonly allowAnchors = false,
   ) {
     const ensure = (
       connection: string,
@@ -144,6 +146,8 @@ export class OrganizationInput {
     for (const [i, work] of current.works.entries()) {
       const ref = `w${i + 1}`;
       this.workRefs.set(work.id, ref);
+      if (allowAnchors && !work.files.length && work.outsideFiles)
+        this.anchors.add(ref);
       this.references.set(
         ref,
         work.files.map((f) => f.id),
@@ -210,6 +214,14 @@ export class OrganizationInput {
       }),
       allocationUnits: this.allocationUnits(files),
       current: {
+        relationshipEdits: (this.current.relationshipEdits || []).map((e) => ({
+          kind: e.kind,
+          action: e.action,
+          name: e.name,
+          works: e.workIds.map((id) => this.workRefs.get(id)).filter(Boolean),
+          outsideWorks: e.workIds.filter((id) => !this.workRefs.has(id)).length,
+          updatedAt: e.updatedAt,
+        })),
         fileDefaults: { assignmentOrigin: "scan" },
         works: this.current.works.map((w) => ({
           id: this.workRefs.get(w.id),
@@ -313,7 +325,13 @@ export class OrganizationInput {
     };
   }
   inspect(text: string, files = this.files, references = this.references) {
-    return inspectOrganization(text, files, references, this.fileRefs);
+    return inspectOrganization(
+      text,
+      files,
+      references,
+      this.fileRefs,
+      this.anchors,
+    );
   }
   allocationUnits(files = this.files): AllocationUnit[] {
     const included = new Set(files.map((file) => this.fileRefs.get(file.id)));
@@ -374,7 +392,13 @@ export class OrganizationInput {
     };
   }
   decode(text: string, files = this.files, references = this.references) {
-    return decodeOrganization(text, files, references, this.fileRefs);
+    return decodeOrganization(
+      text,
+      files,
+      references,
+      this.fileRefs,
+      this.anchors,
+    );
   }
   mergeRevision(draft: string, revision: string) {
     return mergeOrganizationRevision(draft, revision);
@@ -724,11 +748,37 @@ export class OrganizationInput {
       };
     });
     const groupIds = new Map(result.groups.map((g, i) => [g.id, groups[i].id]));
+    const referenced = new Set(
+      result.collections
+        .flatMap((c) => c.groupIds)
+        .filter((id) => this.anchors.has(id)),
+    );
+    for (const ref of referenced) {
+      const work = this.current.works.find(
+        (w) => this.workRefs.get(w.id) === ref,
+      )!;
+      const id = stableId("organization-reference", work.id);
+      groups.push({
+        id,
+        title: work.title,
+        fileIds: [],
+        episodes: [],
+        review: false,
+        reason: "",
+        existingWorkId: work.id,
+        referenceOnly: true,
+      });
+      groupIds.set(ref, id);
+    }
     const projected = new Map(
       this.current.works.map((w) => [
         w.id,
         groups
-          .filter((g) => w.files.some((f) => g.fileIds.includes(f.id)))
+          .filter(
+            (g) =>
+              g.existingWorkId === w.id ||
+              w.files.some((f) => g.fileIds.includes(f.id)),
+          )
           .map((g) => g.id),
       ]),
     );

@@ -12,6 +12,8 @@ import { usesAccount } from "../shared/settings";
 import type {
   OrganizationPlan,
   OrganizationProgress,
+  OrganizationLiveChanges,
+  OrganizationFile,
 } from "../shared/organization";
 import {
   Button,
@@ -19,13 +21,19 @@ import {
   Fade,
   FormField,
   HelpTip,
+  HorizontalScroll,
   IconButton,
   Modal,
   PageHeader,
   TextTip,
   Blank,
 } from "./common";
-import { Field, FieldGroup, FieldLabel } from "./components/ui/field";
+import {
+  Field,
+  FieldContent,
+  FieldGroup,
+  FieldLabel,
+} from "./components/ui/field";
 import { Checkbox } from "./components/ui/checkbox";
 import { Input } from "./components/ui/input";
 import { Textarea } from "./components/ui/textarea";
@@ -33,6 +41,17 @@ import { Badge } from "./components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
 import { errorMessage, useI18n } from "./i18n";
 import { toast } from "sonner";
+
+function hasReviewQuestions(plan: OrganizationPlan) {
+  const deferred = new Set(plan.liveChanges?.conflictingGroupIds);
+  return (
+    plan.groups.some((g) => g.review && !deferred.has(g.id)) ||
+    plan.collections.some(
+      (c) => c.review && !c.groupIds.some((id) => deferred.has(id)),
+    ) ||
+    plan.unassigned.some((id) => !plan.fileExclusions?.includes(id))
+  );
+}
 
 export function OrganizationPage({
   state,
@@ -45,6 +64,15 @@ export function OrganizationPage({
 }) {
   const t = useI18n();
   const saved = state.settings.organization;
+  const [mode, setMode] = useState<"incremental" | "full">("incremental");
+  const [fileExclusions, setFileExclusions] = useState<string[]>([]);
+  const [relationshipRemovals, setRelationshipRemovals] = useState<string[]>(
+    [],
+  );
+  const [liveChanges, setLiveChanges] = useState<OrganizationLiveChanges>();
+  const [acknowledgedRemovals, setAcknowledgedRemovals] = useState<string[]>(
+    [],
+  );
   const connections = state.settings.aiConnections || [];
   const [connectionId, setConnectionId] = useState(saved?.connectionId || "");
   const connection = connections.find((c) => c.id === connectionId);
@@ -114,6 +142,98 @@ export function OrganizationPage({
       clearInterval(timer);
     };
   }, [activity]);
+  useEffect(() => {
+    let active = true;
+    void window.tamki
+      .library<OrganizationPlan | null>("organize-draft")
+      .then((result) => {
+        if (!active || !result?.jobId || job.current) return;
+        setPlan(result);
+        previewJob.current = result.jobId;
+        job.current = result.jobId;
+        setSelected(
+          result.reviewSelection?.groups ||
+            result.groups.filter((g) => !g.review).map((g) => g.id),
+        );
+        setCollections(
+          result.reviewSelection?.collections ||
+            result.collections.filter((c) => !c.review).map((c) => c.id),
+        );
+        setNames({
+          ...Object.fromEntries(result.groups.map((g) => [g.id, g.title])),
+          ...result.reviewSelection?.names,
+        });
+        setAcknowledgedRemovals(
+          result.reviewSelection?.acknowledgedRemovals || [],
+        );
+        setFileExclusions(
+          result.reviewSelection?.fileExclusions || result.fileExclusions || [],
+        );
+        setRelationshipRemovals(
+          result.reviewSelection?.relationshipRemovals ||
+            result.relationshipRemovals?.map((r) => r.id) ||
+            [],
+        );
+        setLiveChanges(result.liveChanges);
+        if (result.scopes)
+          setSelectedRoots(
+            roots
+              .filter((r) =>
+                result.scopes!.some(
+                  (s) => s.connectionId === r.connectionId && s.path === r.path,
+                ),
+              )
+              .map((r) => r.key),
+          );
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (!plan || activity) return;
+    let active = true;
+    const timer = setInterval(() => {
+      void window.tamki
+        .library<OrganizationProgress | null>("organize-progress", plan.jobId)
+        .then((p) => {
+          if (active && p?.changes) setLiveChanges(p.changes);
+        })
+        .catch(() => {});
+    }, 1500);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [plan?.jobId, activity]);
+  useEffect(() => {
+    if (!plan || activity || Object.values(names).some((n) => !n.trim()))
+      return;
+    const timer = setTimeout(() => {
+      void window.tamki
+        .library("organize-review", {
+          jobId: plan.jobId,
+          groups: selected,
+          collections,
+          names,
+          acknowledgedRemovals,
+          relationshipRemovals,
+          fileExclusions,
+        })
+        .catch(() => {});
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [
+    plan?.jobId,
+    activity,
+    selected,
+    collections,
+    names,
+    acknowledgedRemovals,
+    relationshipRemovals,
+    fileExclusions,
+  ]);
   const usable =
     !!connection &&
     (usesAccount(connection.provider)
@@ -164,15 +284,18 @@ export function OrganizationPage({
         webSearch: canSearch && webSearch,
         instructions,
         roots: selected,
+        mode,
       });
       if (!alive.current || job.current !== jobId) return;
       setPlan(result);
-      previewJob.current = result.jobId;
-      setFeedbackOpen(
-        result.groups.some((g) => g.review) ||
-          result.collections.some((c) => c.review) ||
-          result.unassigned.length > 0,
+      setLiveChanges(result.liveChanges);
+      setAcknowledgedRemovals([]);
+      setFileExclusions(result.fileExclusions || []);
+      setRelationshipRemovals(
+        result.relationshipRemovals?.map((r) => r.id) || [],
       );
+      previewJob.current = result.jobId;
+      setFeedbackOpen(hasReviewQuestions(result));
       setSelected(result.groups.filter((g) => !g.review).map((g) => g.id));
       setCollections(
         result.collections.filter((c) => !c.review).map((c) => c.id),
@@ -208,11 +331,19 @@ export function OrganizationPage({
           jobId,
           previousJobId,
           feedback,
-          titles: plan.groups.map((g) => ({ id: g.id, title: names[g.id] })),
+          titles: plan.groups
+            .filter((g) => !g.referenceOnly)
+            .map((g) => ({ id: g.id, title: names[g.id] })),
         },
       );
       if (!alive.current || job.current !== jobId) return;
       setPlan(result);
+      setLiveChanges(result.liveChanges);
+      setAcknowledgedRemovals([]);
+      setFileExclusions(result.fileExclusions || []);
+      setRelationshipRemovals(
+        result.relationshipRemovals?.map((r) => r.id) || [],
+      );
       previewJob.current = result.jobId;
       job.current = result.jobId;
       setNames(Object.fromEntries(result.groups.map((g) => [g.id, g.title])));
@@ -222,11 +353,7 @@ export function OrganizationPage({
       );
       setExpanded([]);
       setFeedback("");
-      setFeedbackOpen(
-        result.groups.some((g) => g.review) ||
-          result.collections.some((c) => c.review) ||
-          result.unassigned.length > 0,
-      );
+      setFeedbackOpen(hasReviewQuestions(result));
     } catch (e) {
       if (alive.current) {
         job.current = previousJobId;
@@ -240,6 +367,10 @@ export function OrganizationPage({
     cancel();
     job.current = null;
     setPlan(null);
+    setLiveChanges(undefined);
+    setAcknowledgedRemovals([]);
+    setRelationshipRemovals([]);
+    setFileExclusions([]);
     previewJob.current = null;
     setFeedbackOpen(false);
     setFeedback("");
@@ -255,11 +386,14 @@ export function OrganizationPage({
         "organize-apply",
         {
           jobId: plan.jobId,
-          groups: selected.map((id) => ({ id, title: names[id] })),
+          acknowledgedRemovals: safeRemovals,
+          relationshipRemovalIds: relationshipRemovals,
+          fileExclusionIds: fileExclusions,
+          groups: safeSelected.map((id) => ({ id, title: names[id] })),
           collectionIds: collections.filter((id) =>
             plan.collections
               .find((c) => c.id === id)
-              ?.groupIds.every((id) => selected.includes(id)),
+              ?.groupIds.every((id) => safeSelected.includes(id)),
           ),
         },
       );
@@ -293,14 +427,81 @@ export function OrganizationPage({
       })}
     </div>
   );
+  const changeFiles = (files: OrganizationFile[], removed = false) => (
+    <FieldGroup>
+      {files.map((file) => (
+        <Field key={file.id} orientation="horizontal">
+          {removed && (
+            <Checkbox
+              aria-label={`${t("organizationAcknowledgeRemoval")} · ${file.name}`}
+              checked={safeRemovals.includes(file.id)}
+              onCheckedChange={() =>
+                setAcknowledgedRemovals((s) => toggle(s, file.id))
+              }
+              disabled={
+                !!activity ||
+                !!liveChanges?.deferredRemovalIds.includes(file.id)
+              }
+            />
+          )}
+          <div className="min-w-0 flex-1">
+            <TextTip>{file.name}</TextTip>
+            <div className="muted">
+              <TextTip>{file.relativePath}</TextTip>
+            </div>
+          </div>
+        </Field>
+      ))}
+    </FieldGroup>
+  );
+  const blocked = !!liveChanges?.blocked;
+  const deferred =
+    plan?.groups.filter((g) =>
+      liveChanges?.conflictingGroupIds.includes(g.id),
+    ) || [];
+  const safeSelected = selected.filter(
+    (id) => !liveChanges?.conflictingGroupIds.includes(id),
+  );
+  const safeRemovals = acknowledgedRemovals.filter(
+    (id) => !liveChanges?.deferredRemovalIds.includes(id),
+  );
+  useEffect(() => {
+    if (!plan || !liveChanges) return;
+    setSelected((s) =>
+      s.filter((id) => !liveChanges.conflictingGroupIds.includes(id)),
+    );
+    setAcknowledgedRemovals((s) =>
+      s.filter((id) => !liveChanges.deferredRemovalIds.includes(id)),
+    );
+  }, [
+    plan?.jobId,
+    liveChanges?.conflictingGroupIds.join("|"),
+    liveChanges?.deferredRemovalIds.join("|"),
+  ]);
+  const unresolvedUnassigned =
+    plan?.unassigned.filter((id) => !fileExclusions.includes(id)) || [];
+  const reviewGroups =
+    plan?.groups.filter(
+      (g) => g.review && !deferred.some((d) => d.id === g.id),
+    ) || [];
+  const reviewRelationships =
+    plan?.collections.filter(
+      (c) =>
+        c.review && !c.groupIds.some((id) => deferred.some((d) => d.id === id)),
+    ) || [];
   const flaggedCount = plan
-    ? plan.groups.filter((g) => g.review).length +
-      plan.collections.filter((c) => c.review).length +
-      (plan.unassigned.length ? 1 : 0)
+    ? reviewGroups.length +
+      reviewRelationships.length +
+      (unresolvedUnassigned.length ? 1 : 0)
     : 0;
   if (plan)
     return (
-      <Tabs defaultValue="works" className="page organization-page">
+      <Tabs
+        defaultValue={
+          plan.groups.some((g) => !g.referenceOnly) ? "works" : "changes"
+        }
+        className="page organization-page"
+      >
         <PageHeader
           title={t("smartOrganize")}
           back={() => {
@@ -308,22 +509,36 @@ export function OrganizationPage({
             onBack();
           }}
           sub={
-            <TabsList>
-              <TabsTrigger value="works">
-                {t("organizationWorks")} · {plan.groups.length}
-              </TabsTrigger>
-              <TabsTrigger value="series">
-                {t("series")} ·{" "}
-                {plan.collections.filter((c) => c.kind === "series").length}
-              </TabsTrigger>
-              <TabsTrigger value="collections">
-                {t("organizationCollections")} ·{" "}
-                {plan.collections.filter((c) => c.kind !== "series").length}
-              </TabsTrigger>
-              <TabsTrigger value="unassigned">
-                {t("organizationUnassigned")} · {plan.unassigned.length}
-              </TabsTrigger>
-            </TabsList>
+            <HorizontalScroll>
+              <TabsList>
+                <TabsTrigger value="works">
+                  {t("organizationWorks")} ·{" "}
+                  {plan.groups.filter((g) => !g.referenceOnly).length}
+                </TabsTrigger>
+                <TabsTrigger value="series">
+                  {t("series")} ·{" "}
+                  {plan.collections.filter((c) => c.kind === "series").length}
+                </TabsTrigger>
+                <TabsTrigger value="collections">
+                  {t("organizationCollections")} ·{" "}
+                  {plan.collections.filter((c) => c.kind !== "series").length}
+                </TabsTrigger>
+                {!!deferred.length && (
+                  <TabsTrigger value="deferred">
+                    {t("organizationDeferred")} ·{" "}
+                    {deferred.filter((g) => !g.referenceOnly).length}
+                  </TabsTrigger>
+                )}
+                {plan.delta && (
+                  <TabsTrigger value="changes">
+                    {t("organizationChanges")}
+                  </TabsTrigger>
+                )}
+                <TabsTrigger value="unassigned">
+                  {t("organizationUnassigned")} · {unresolvedUnassigned.length}
+                </TabsTrigger>
+              </TabsList>
+            </HorizontalScroll>
           }
         >
           {error && (
@@ -333,7 +548,7 @@ export function OrganizationPage({
           )}
           <Button
             variant="secondary"
-            disabled={!!activity}
+            disabled={!!activity || !plan.files.length}
             onClick={() => setFeedbackOpen(true)}
           >
             {t("organizationFeedback")}
@@ -344,8 +559,13 @@ export function OrganizationPage({
           <Button
             disabled={
               !!activity ||
-              !selected.length ||
-              selected.some((id) => !names[id]?.trim())
+              (!safeSelected.some(
+                (id) => !plan.groups.find((g) => g.id === id)?.referenceOnly,
+              ) &&
+                !safeRemovals.length &&
+                !relationshipRemovals.length &&
+                !fileExclusions.length) ||
+              safeSelected.some((id) => !names[id]?.trim())
             }
             onClick={() => setConfirm(true)}
           >
@@ -353,127 +573,272 @@ export function OrganizationPage({
           </Button>
         </PageHeader>
         <Fade className="page-body">
+          {plan.delta && (
+            <p className="organization-review-summary" role="status">
+              {t("organizationDeltaSummary")
+                .replace("{pending}", String(plan.delta.pendingFiles))
+                .replace("{unchanged}", String(plan.delta.unchangedFiles))}
+            </p>
+          )}
+          {liveChanges && !!liveChanges.added.length && (
+            <p className="organization-review-summary" role="status">
+              {t("organizationLiveAdded").replace(
+                "{count}",
+                String(liveChanges.added.length),
+              )}
+            </p>
+          )}
+          {blocked && (
+            <p className="organization-error" role="alert">
+              {t(
+                safeSelected.some(
+                  (id) => !plan.groups.find((g) => g.id === id)?.referenceOnly,
+                ) || safeRemovals.length
+                  ? "organizationDeferredSummary"
+                  : "organizationAllDeferred",
+              ).replace(
+                "{count}",
+                String(deferred.filter((g) => !g.referenceOnly).length),
+              )}
+            </p>
+          )}
+          {plan.delta && (
+            <TabsContent value="changes">
+              <FieldGroup>
+                <p className="muted">
+                  {t("organizationBaselineHelp")}
+                  {plan.delta.reviewedAt
+                    ? " · " + new Date(plan.delta.reviewedAt).toLocaleString()
+                    : ""}
+                </p>
+                {!plan.delta.pendingFiles && !plan.delta.removed.length && (
+                  <Blank title={t("organizationNoChanges")} />
+                )}
+                {!!plan.delta.added.length && (
+                  <section>
+                    <h3>
+                      {t("organizationAdded")} · {plan.delta.added.length}
+                    </h3>
+                    {changeFiles(plan.delta.added)}
+                  </section>
+                )}
+                {!!plan.delta.modified.length && (
+                  <section>
+                    <h3>
+                      {t("organizationModified")} · {plan.delta.modified.length}
+                    </h3>
+                    {changeFiles(plan.delta.modified)}
+                  </section>
+                )}
+                {!!plan.fileExclusions?.length && (
+                  <section>
+                    <h3>{t("organizationFileExclusions")}</h3>
+                    <p className="muted">
+                      {t("organizationFileExclusionHelp")}
+                    </p>
+                    {plan.fileExclusions.map((id) => {
+                      const file = plan.files.find((f) => f.id === id)!;
+                      return (
+                        <Field key={id} orientation="horizontal">
+                          <Checkbox
+                            aria-label={t("organizationExcludeFile").replace(
+                              "{name}",
+                              file.name,
+                            )}
+                            checked={fileExclusions.includes(id)}
+                            disabled={!!activity}
+                            onCheckedChange={() =>
+                              setFileExclusions((s) => toggle(s, id))
+                            }
+                          />
+                          <TextTip>{file.relativePath}</TextTip>
+                        </Field>
+                      );
+                    })}
+                  </section>
+                )}
+                {!!plan.relationshipRemovals?.length && (
+                  <section>
+                    <h3>{t("organizationRelationshipRemovals")}</h3>
+                    <p className="muted">
+                      {t("organizationRelationshipRemovalHelp")}
+                    </p>
+                    {plan.relationshipRemovals.map((r) => (
+                      <Field key={r.id} orientation="horizontal">
+                        <Checkbox
+                          aria-label={t(
+                            "organizationRemoveRelationship",
+                          ).replace("{name}", r.name)}
+                          checked={relationshipRemovals.includes(r.id)}
+                          disabled={!!activity}
+                          onCheckedChange={() =>
+                            setRelationshipRemovals((s) => toggle(s, r.id))
+                          }
+                        />
+                        <span>{r.name}</span>
+                      </Field>
+                    ))}
+                  </section>
+                )}
+                {!!plan.delta.removed.length && (
+                  <section>
+                    <h3>
+                      {t("organizationRemoved")} · {plan.delta.removed.length}
+                    </h3>
+                    <p className="muted">{t("organizationRemovalHelp")}</p>
+                    {changeFiles(plan.delta.removed, true)}
+                  </section>
+                )}
+              </FieldGroup>
+            </TabsContent>
+          )}
+          {!!deferred.length && (
+            <TabsContent value="deferred">
+              <FieldGroup>
+                <p className="muted">{t("organizationDeferredHelp")}</p>
+                {deferred
+                  .filter((g) => !g.referenceOnly)
+                  .map((g) => (
+                    <section key={g.id}>
+                      <h3>{names[g.id] || g.title}</h3>
+                      {fileList(g.fileIds)}
+                    </section>
+                  ))}
+              </FieldGroup>
+            </TabsContent>
+          )}
           <TabsContent value="works">
-            {!plan.groups.length ? (
+            {!plan.groups.some((g) => !g.referenceOnly) ? (
               <Blank title={t("organizationNoGroups")} />
             ) : (
-              plan.groups.map((g) => (
-                <section className="organization-group" key={g.id}>
-                  <div className="organization-group-heading">
-                    <Checkbox
-                      aria-label={g.title}
-                      checked={selected.includes(g.id)}
-                      disabled={!!activity}
-                      onCheckedChange={() =>
-                        setSelected((s) => toggle(s, g.id))
-                      }
-                    />
-                    <Input
-                      aria-label={`${t("promptTitle")} · ${g.title}`}
-                      value={names[g.id]}
-                      disabled={!!activity}
-                      maxLength={500}
-                      onChange={(e) =>
-                        setNames((n) => ({ ...n, [g.id]: e.target.value }))
-                      }
-                    />
-                    <span className="muted organization-count">
-                      {g.episodes
-                        ? t("episodeVersionCount")
-                            .replace("{episodes}", String(g.episodes.length))
-                            .replace(
-                              "{versions}",
-                              String(
-                                g.episodes.reduce(
-                                  (n, e) => n + e.versions.length,
-                                  0,
+              plan.groups
+                .filter((g) => !g.referenceOnly)
+                .map((g) => (
+                  <section className="organization-group" key={g.id}>
+                    <div className="organization-group-heading">
+                      <Checkbox
+                        aria-label={g.title}
+                        checked={safeSelected.includes(g.id)}
+                        disabled={
+                          !!activity || deferred.some((d) => d.id === g.id)
+                        }
+                        onCheckedChange={() =>
+                          setSelected((s) => toggle(s, g.id))
+                        }
+                      />
+                      <Input
+                        aria-label={`${t("promptTitle")} · ${g.title}`}
+                        value={names[g.id]}
+                        disabled={
+                          !!activity || deferred.some((d) => d.id === g.id)
+                        }
+                        maxLength={500}
+                        onChange={(e) =>
+                          setNames((n) => ({ ...n, [g.id]: e.target.value }))
+                        }
+                      />
+                      <span className="muted organization-count">
+                        {g.episodes
+                          ? t("episodeVersionCount")
+                              .replace("{episodes}", String(g.episodes.length))
+                              .replace(
+                                "{versions}",
+                                String(
+                                  g.episodes.reduce(
+                                    (n, e) => n + e.versions.length,
+                                    0,
+                                  ),
                                 ),
-                              ),
-                            )
-                            .replace("{files}", String(g.fileIds.length))
-                        : t("organizationFiles").replace(
-                            "{count}",
-                            String(g.fileIds.length),
-                          )}
-                    </span>
-                    {g.review && (
-                      <Badge variant="secondary">
-                        {t("organizationReview")}
-                      </Badge>
-                    )}
-                    {g.reason && <HelpTip text={g.reason} />}
-                    <IconButton
-                      label={t("organizationDetails")}
-                      aria-expanded={expanded.includes(g.id)}
-                      onClick={() => setExpanded((s) => toggle(s, g.id))}
-                    >
-                      {expanded.includes(g.id) ? (
-                        <CaretDownIcon />
-                      ) : (
-                        <CaretRightIcon />
+                              )
+                              .replace("{files}", String(g.fileIds.length))
+                          : t("organizationFiles").replace(
+                              "{count}",
+                              String(g.fileIds.length),
+                            )}
+                      </span>
+                      {deferred.some((d) => d.id === g.id) && (
+                        <Badge variant="secondary">
+                          {t("organizationDeferred")}
+                        </Badge>
                       )}
-                    </IconButton>
-                  </div>
-                  {g.changes && (
-                    <div className="organization-diff">
-                      {g.changes.title &&
-                        g.changes.previousTitles.length > 0 && (
-                          <span className="muted truncate">
-                            <TextTip>{`${t("organizationPreviously")} · ${g.changes.previousTitles.join(" / ")}`}</TextTip>
-                          </span>
+                      {g.review && !deferred.some((d) => d.id === g.id) && (
+                        <Badge variant="secondary">
+                          {t("organizationReview")}
+                        </Badge>
+                      )}
+                      {g.reason && <HelpTip text={g.reason} />}
+                      <IconButton
+                        label={t("organizationDetails")}
+                        aria-expanded={expanded.includes(g.id)}
+                        onClick={() => setExpanded((s) => toggle(s, g.id))}
+                      >
+                        {expanded.includes(g.id) ? (
+                          <CaretDownIcon />
+                        ) : (
+                          <CaretRightIcon />
                         )}
-                      {g.changes.membership && (
-                        <Badge variant="secondary">
-                          {t("organizationMembershipChanged")}
-                        </Badge>
-                      )}
-                      {g.changes.order && (
-                        <Badge variant="secondary">
-                          {t("organizationOrderChanged")}
-                        </Badge>
-                      )}
-                      {g.changes.versions && (
-                        <Badge variant="secondary">
-                          {t("organizationVersionGrouping")}
-                        </Badge>
-                      )}
-                      {g.changes.manual && (
-                        <Badge variant="outline">
-                          {t("organizationManualChanged")}
-                        </Badge>
-                      )}
+                      </IconButton>
                     </div>
-                  )}
-                  {expanded.includes(g.id) &&
-                    (g.episodes ? (
-                      <div className="organization-episodes">
-                        {g.episodes.map((e, i) => (
-                          <div key={i} className="organization-episode">
-                            <strong>
-                              {[e.number, e.title]
-                                .filter(Boolean)
-                                .join(" · ") || String(i + 1)}
-                            </strong>
-                            {e.versions.map((v, n) => (
-                              <div key={n} className="organization-version">
-                                <span className="muted">
-                                  {v.label ||
-                                    t("versionNumber").replace(
-                                      "{n}",
-                                      String(n + 1),
-                                    )}
-                                </span>
-                                {fileList(v.fileIds)}
-                              </div>
-                            ))}
-                          </div>
-                        ))}
+                    {g.changes && (
+                      <div className="organization-diff">
+                        {g.changes.title &&
+                          g.changes.previousTitles.length > 0 && (
+                            <span className="muted truncate">
+                              <TextTip>{`${t("organizationPreviously")} · ${g.changes.previousTitles.join(" / ")}`}</TextTip>
+                            </span>
+                          )}
+                        {g.changes.membership && (
+                          <Badge variant="secondary">
+                            {t("organizationMembershipChanged")}
+                          </Badge>
+                        )}
+                        {g.changes.order && (
+                          <Badge variant="secondary">
+                            {t("organizationOrderChanged")}
+                          </Badge>
+                        )}
+                        {g.changes.versions && (
+                          <Badge variant="secondary">
+                            {t("organizationVersionGrouping")}
+                          </Badge>
+                        )}
+                        {g.changes.manual && (
+                          <Badge variant="outline">
+                            {t("organizationManualChanged")}
+                          </Badge>
+                        )}
                       </div>
-                    ) : (
-                      fileList(g.fileIds)
-                    ))}
-                </section>
-              ))
+                    )}
+                    {expanded.includes(g.id) &&
+                      (g.episodes ? (
+                        <div className="organization-episodes">
+                          {g.episodes.map((e, i) => (
+                            <div key={i} className="organization-episode">
+                              <strong>
+                                {[e.number, e.title]
+                                  .filter(Boolean)
+                                  .join(" · ") || String(i + 1)}
+                              </strong>
+                              {e.versions.map((v, n) => (
+                                <div key={n} className="organization-version">
+                                  <span className="muted">
+                                    {v.label ||
+                                      t("versionNumber").replace(
+                                        "{n}",
+                                        String(n + 1),
+                                      )}
+                                  </span>
+                                  {fileList(v.fileIds)}
+                                </div>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        fileList(g.fileIds)
+                      ))}
+                  </section>
+                ))
             )}
           </TabsContent>
           {(["series", "collection"] as const).map((kind) => (
@@ -495,9 +860,41 @@ export function OrganizationPage({
                 plan.collections
                   .filter((c) => (c.kind || "collection") === kind)
                   .map((c) => {
-                    const usable = c.groupIds.every((id) =>
-                      selected.includes(id),
+                    const deferredMembers = c.groupIds.filter((id) =>
+                      deferred.some((g) => g.id === id),
                     );
+                    const unselectedMembers = c.groupIds.filter(
+                      (id) =>
+                        !safeSelected.includes(id) &&
+                        !deferredMembers.includes(id),
+                    );
+                    const usable =
+                      !deferredMembers.length && !unselectedMembers.length;
+                    const memberNames = (ids: string[]) =>
+                      ids
+                        .map(
+                          (id) =>
+                            names[id] ||
+                            plan.groups.find((g) => g.id === id)?.title ||
+                            id,
+                        )
+                        .join("、");
+                    const availability = [
+                      deferredMembers.length
+                        ? t("organizationDeferredMembers").replace(
+                            "{names}",
+                            memberNames(deferredMembers),
+                          )
+                        : "",
+                      unselectedMembers.length
+                        ? t("organizationUnselectedMembers").replace(
+                            "{names}",
+                            memberNames(unselectedMembers),
+                          )
+                        : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ");
                     return (
                       <Field
                         key={c.id}
@@ -513,27 +910,29 @@ export function OrganizationPage({
                             setCollections((s) => toggle(s, c.id))
                           }
                         />
-                        <div>
-                          <FieldLabel htmlFor={`organization-${c.id}`}>
-                            {c.name}
-                          </FieldLabel>
-                          {!usable && (
-                            <HelpTip
-                              text={t("organizationUnselectedMembers").replace(
-                                "{names}",
-                                c.groupIds
-                                  .filter((id) => !selected.includes(id))
-                                  .map(
-                                    (id) =>
-                                      names[id] ||
-                                      plan.groups.find((g) => g.id === id)
-                                        ?.title ||
-                                      id,
-                                  )
-                                  .join("、"),
-                              )}
-                            />
-                          )}
+                        <FieldContent>
+                          <div className="organization-relationship-heading">
+                            <FieldLabel htmlFor={`organization-${c.id}`}>
+                              {c.name}
+                            </FieldLabel>
+                            {c.review && !deferredMembers.length && (
+                              <Badge variant="secondary">
+                                {t("organizationReview")}
+                              </Badge>
+                            )}
+                            {!usable && (
+                              <>
+                                <Badge variant="secondary">
+                                  {t(
+                                    deferredMembers.length
+                                      ? "organizationMembersDeferred"
+                                      : "organizationMembersUnselected",
+                                  )}
+                                </Badge>
+                                <HelpTip text={availability} />
+                              </>
+                            )}
+                          </div>
 
                           {c.previousName && (
                             <span className="muted truncate">
@@ -547,7 +946,9 @@ export function OrganizationPage({
                               collections.filter((id) =>
                                 plan.collections
                                   .find((s) => s.id === id)
-                                  ?.groupIds.every((g) => selected.includes(g)),
+                                  ?.groupIds.every((g) =>
+                                    safeSelected.includes(g),
+                                  ),
                               ),
                             ).map((member) => (
                               <Badge
@@ -555,7 +956,7 @@ export function OrganizationPage({
                                 variant="secondary"
                                 className={
                                   !member.groupIds.every((id) =>
-                                    selected.includes(id),
+                                    safeSelected.includes(id),
                                   )
                                     ? "organization-muted"
                                     : undefined
@@ -580,7 +981,7 @@ export function OrganizationPage({
                               </Badge>
                             ))}
                           </div>
-                        </div>
+                        </FieldContent>
                       </Field>
                     );
                   })
@@ -588,8 +989,8 @@ export function OrganizationPage({
             </TabsContent>
           ))}
           <TabsContent value="unassigned">
-            {plan.unassigned.length ? (
-              fileList(plan.unassigned)
+            {unresolvedUnassigned.length ? (
+              fileList(unresolvedUnassigned)
             ) : (
               <Blank title={t("organizationNoUnassigned")} />
             )}
@@ -636,6 +1037,21 @@ export function OrganizationPage({
             }
           >
             <Fade className="organization-feedback-issues">
+              {!!deferred.length && (
+                <section>
+                  <strong>
+                    {t("organizationDeferred")} ·{" "}
+                    {deferred.filter((g) => !g.referenceOnly).length}
+                  </strong>
+                  <p>{t("organizationDeferredFeedback")}</p>
+                  <p>
+                    {deferred
+                      .filter((g) => !g.referenceOnly)
+                      .map((g) => names[g.id] || g.title)
+                      .join(" / ")}
+                  </p>
+                </section>
+              )}
               {flaggedCount > 0 && (
                 <div className="organization-review-summary">
                   <span>
@@ -647,36 +1063,38 @@ export function OrganizationPage({
                   <HelpTip text={t("organizationReviewMeaning")} />
                 </div>
               )}
-              {plan.groups
-                .filter((g) => g.review)
-                .map((g) => (
-                  <section key={g.id}>
-                    <strong>{names[g.id] || g.title}</strong>
-                    <p>{g.reason || t("organizationReview")}</p>
-                  </section>
-                ))}
-              {plan.collections
-                .filter((c) => c.review)
-                .map((c) => (
-                  <section key={c.id}>
-                    <strong>{c.name}</strong>
-                    <p>{t("organizationReview")}</p>
-                  </section>
-                ))}
-              {plan.unassigned.length > 0 && (
+              {reviewGroups.map((g) => (
+                <section key={g.id}>
+                  <strong>{names[g.id] || g.title}</strong>
+                  <p>{g.reason || t("organizationReview")}</p>
+                </section>
+              ))}
+              {reviewRelationships.map((c) => (
+                <section key={c.id}>
+                  <strong>{c.name}</strong>
+                  <p>
+                    {c.previousName
+                      ? t("organizationRelationshipRename")
+                          .replace("{before}", c.previousName)
+                          .replace("{after}", c.name)
+                      : t("organizationReview")}
+                  </p>
+                </section>
+              ))}
+              {unresolvedUnassigned.length > 0 && (
                 <section>
                   <strong>{t("organizationUnassigned")}</strong>
                   <p>
                     {t("organizationFiles").replace(
                       "{count}",
-                      String(plan.unassigned.length),
+                      String(unresolvedUnassigned.length),
                     )}
                   </p>
                 </section>
               )}
-              {!plan.groups.some((g) => g.review) &&
-                !plan.collections.some((c) => c.review) &&
-                !plan.unassigned.length && (
+              {!reviewGroups.length &&
+                !reviewRelationships.length &&
+                !unresolvedUnassigned.length && (
                   <p className="organization-feedback-empty muted">
                     {t("organizationNoQuestions")}
                     <HelpTip text={t("organizationReviewMeaning")} />
@@ -719,7 +1137,53 @@ export function OrganizationPage({
               </>
             }
           >
-            <p className="modal-body">{t("organizationApplyBody")}</p>
+            <div className="modal-body organization-apply-summary">
+              <p>{t("organizationApplyBody")}</p>
+              {!!deferred.length && (
+                <p>
+                  {t("organizationApplyDeferred").replace(
+                    "{count}",
+                    String(deferred.filter((g) => !g.referenceOnly).length),
+                  )}
+                </p>
+              )}
+              {!!safeRemovals.length && (
+                <p>
+                  {t("organizationApplyMissingFiles").replace(
+                    "{count}",
+                    String(safeRemovals.length),
+                  )}
+                </p>
+              )}
+              {!!fileExclusions.length && (
+                <p>
+                  {t("organizationApplyFileExclusions").replace(
+                    "{count}",
+                    String(fileExclusions.length),
+                  )}
+                </p>
+              )}
+              {!!relationshipRemovals.length && (
+                <section>
+                  <p>{t("organizationApplyRelationshipRemovals")}</p>
+                  <ul>
+                    {plan.relationshipRemovals
+                      ?.filter((r) => relationshipRemovals.includes(r.id))
+                      .map((r) => (
+                        <li key={r.id}>
+                          {t(r.kind === "series" ? "series" : "collections")}
+                          {" · "}
+                          <strong>{r.name}</strong>
+                        </li>
+                      ))}
+                  </ul>
+                  <p className="muted">
+                    {t("organizationApplyRelationshipRetention")}
+                  </p>
+                </section>
+              )}
+              <p className="muted">{t("organizationApplySourceFiles")}</p>
+            </div>
           </Modal>
         )}
       </Tabs>
@@ -791,6 +1255,21 @@ export function OrganizationPage({
           <section>
             <FieldGroup>
               <FieldGroup className="organization-controls">
+                <FormField label={t("organizationMode")}>
+                  <Choice
+                    label={t("organizationMode")}
+                    value={mode}
+                    disabled={!!activity}
+                    onChange={(v) => setMode(v as "incremental" | "full")}
+                    options={[
+                      {
+                        value: "incremental",
+                        label: t("organizationIncremental"),
+                      },
+                      { value: "full", label: t("organizationFull") },
+                    ]}
+                  />
+                </FormField>
                 <FormField
                   label={t("aiConnection")}
                   htmlFor="organization-connection"

@@ -81,28 +81,53 @@ try {
   await page.goto(base);
   const shelves = page.locator(".library-shelf");
   const works = page.locator(".library-works");
-  assert.equal(await shelves.count(), 2);
-  await shelves.nth(1).locator(".group-cover img").first().waitFor();
+  assert.equal(await shelves.count(), 1);
+  assert.deepEqual(await shelves.getByRole("tab").allTextContents(), [
+    "系列",
+    "合集",
+  ]);
   assert.equal(
     await shelves
-      .nth(1)
+      .getByRole("tab", { name: "系列", exact: true })
+      .getAttribute("aria-selected"),
+    "true",
+  );
+  assert(
+    await shelves
+      .getByRole("tablist")
+      .evaluate((el) => el.getAttribute("data-variant") === "line"),
+  );
+  assert.equal(
+    await shelves
+      .getByRole("tab", { name: "合集", exact: true })
+      .evaluate((el) => getComputedStyle(el).fontSize),
+    "18px",
+  );
+  await shelves.getByRole("tab", { name: "系列", exact: true }).click();
+  await shelves.locator(".group-cover img").first().waitFor();
+  assert.equal(
+    await shelves
+      .first()
       .locator(".group-card")
       .first()
       .locator(".group-cover img")
       .count(),
-    1,
+    2,
   );
   assert.match(
     await shelves
-      .nth(1)
+      .first()
       .locator(".group-card")
       .first()
       .locator(".group-cover img")
+      .first()
       .getAttribute("src"),
     /\/cover\/cover-0$/,
   );
-  for (const shelf of await shelves.all()) {
-    assert.equal(await shelf.locator(".group-card").count(), 6);
+  for (const kind of ["系列", "合集"]) {
+    await shelves.getByRole("tab", { name: kind, exact: true }).click();
+    const shelf = shelves;
+    assert.equal(await shelf.locator(".group-card").count(), 8);
     await shelf.getByRole("button", { name: "更多", exact: true }).waitFor();
     const tops = await shelf
       .locator(".cover-button")
@@ -114,12 +139,12 @@ try {
   assert.equal(await works.locator(".media-card").count(), 16);
   await works.getByRole("radio", { name: "已看完", exact: true }).click();
   assert.equal(await works.locator(".media-card").count(), 8);
-  assert.equal(await shelves.first().locator(".group-card").count(), 6);
+  assert.equal(await shelves.first().locator(".group-card").count(), 8);
   await works
     .getByRole("textbox", { name: "搜索", exact: true })
     .fill("不存在");
   assert.equal(await works.locator(".media-card").count(), 0);
-  assert.equal(await shelves.last().locator(".group-card").count(), 6);
+  assert.equal(await shelves.last().locator(".group-card").count(), 8);
   await shelves
     .first()
     .getByRole("button", { name: "更多", exact: true })
@@ -207,6 +232,7 @@ try {
   assert.equal(await works.locator(".media-card").count(), 0);
   await works.getByRole("textbox", { name: "搜索", exact: true }).fill("");
   await works.getByRole("radio", { name: "全部", exact: true }).click();
+  await shelves.getByRole("tab", { name: "系列", exact: true }).click();
   await shelves
     .last()
     .getByRole("button", { name: "更多", exact: true })
@@ -223,7 +249,7 @@ try {
     ),
   );
   await page.screenshot({
-    path: "test-results/library-three-sections.png",
+    path: "test-results/library-group-tabs.png",
     animations: "disabled",
   });
   for (const [width, count] of [
@@ -232,13 +258,32 @@ try {
     [420, 2],
   ]) {
     await page.setViewportSize({ width, height: 950 });
-    await page.waitForFunction(
-      (n) =>
-        document.querySelector(".library-shelf .library-grid").children
-          .length === n,
-      count,
-    );
-    assert.equal(await shelves.first().locator(".group-card").count(), count);
+    await page.waitForFunction((n) => {
+      const shelf = document.querySelector(".library-shelf");
+      const rail = document.querySelector(
+        ".library-shelf .horizontal-scroll-items",
+      );
+      const style = getComputedStyle(rail);
+      return (
+        Number(
+          getComputedStyle(shelf).getPropertyValue("--library-columns"),
+        ) === n &&
+        parseFloat(style.columnGap) ===
+          parseFloat(style.getPropertyValue("--library-column-gap"))
+      );
+    }, count);
+    const visible = await shelves
+      .locator(".horizontal-scroll-items")
+      .evaluate((el) => {
+        el.scrollLeft = 0;
+        const r = el.getBoundingClientRect();
+        return [...el.children].filter((child) => {
+          const c = child.getBoundingClientRect();
+          return c.left >= r.left - 1 && c.right <= r.right + 1;
+        }).length;
+      });
+    assert.equal(visible, count);
+    assert.equal(await shelves.locator(".group-card").count(), 8);
     assert.equal(
       await page.evaluate(
         () => document.documentElement.scrollWidth > innerWidth,
@@ -247,17 +292,126 @@ try {
     );
     if (width === 420)
       await page.screenshot({
-        path: "test-results/library-three-sections-narrow.png",
+        path: "test-results/library-group-tabs-narrow.png",
       });
   }
+  await page.setViewportSize({ width: 700, height: 950 });
+  const rail = shelves.locator(".horizontal-scroll-items");
+  const previousPage = shelves.getByRole("button", {
+    name: "向左翻页",
+    exact: true,
+  });
+  const nextPage = shelves.getByRole("button", {
+    name: "向右翻页",
+    exact: true,
+  });
+  await rail.evaluate((el) => {
+    el.scrollLeft = 0;
+  });
+  await nextPage.waitFor();
+  await previousPage.waitFor({ state: "detached" });
+  assert.equal(
+    await rail.evaluate((el) => el.style.getPropertyValue("--fade-start")),
+    "0px",
+  );
+  assert.equal(
+    await rail.evaluate((el) => el.style.getPropertyValue("--fade-end")),
+    "16px",
+  );
+  await nextPage.click();
+  await previousPage.waitFor();
+  await nextPage.waitFor();
+  await rail.evaluate((el) => {
+    el.scrollLeft = el.scrollWidth;
+  });
+  await nextPage.waitFor({ state: "detached" });
+  await previousPage.waitFor();
+  assert.equal(
+    await rail.evaluate((el) => el.style.getPropertyValue("--fade-end")),
+    "0px",
+  );
+  // At the boundary, both the control and the transparent edge fade out;
+  // the disappearing control stops receiving input immediately.
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await rail.evaluate((el) => {
+    el.scrollLeft = (el.scrollWidth - el.clientWidth) / 2;
+  });
+  await page.waitForFunction(() => {
+    const button = document.querySelector(
+      ".library-shelf .horizontal-scroll-next",
+    );
+    const rail = document.querySelector(
+      ".library-shelf .horizontal-scroll-items",
+    );
+    return (
+      Number(getComputedStyle(button).opacity) >= 0.74 &&
+      Number(getComputedStyle(rail).getPropertyValue("--fade-end-alpha")) === 1
+    );
+  });
+  await rail.evaluate((el) => {
+    el.scrollLeft = el.scrollWidth;
+  });
+  await page.waitForFunction(() => {
+    const button = document.querySelector(
+      ".library-shelf .horizontal-scroll-next",
+    );
+    const rail = document.querySelector(
+      ".library-shelf .horizontal-scroll-items",
+    );
+    const opacity = Number(getComputedStyle(button).opacity);
+    const mask = Number(
+      getComputedStyle(rail).getPropertyValue("--fade-end-alpha"),
+    );
+    return (
+      button.disabled &&
+      button.getAttribute("aria-hidden") === "true" &&
+      getComputedStyle(button).pointerEvents === "none" &&
+      opacity > 0 &&
+      opacity < 0.74 &&
+      mask > 0 &&
+      mask < 1
+    );
+  });
+  await shelves.locator(".horizontal-scroll-next").waitFor({ state: "hidden" });
+  await page.waitForFunction(
+    () =>
+      Number(
+        getComputedStyle(
+          document.querySelector(".library-shelf .horizontal-scroll-items"),
+        ).getPropertyValue("--fade-end-alpha"),
+      ) === 0,
+  );
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  // The final entry is reachable directly in the row, beyond its first page.
+  await shelves
+    .getByRole("button", { name: "光影之间", exact: true })
+    .first()
+    .click();
+  assert.equal(await page.locator(".library-works .media-card").count(), 2);
+  await page.getByRole("button", { name: "返回", exact: true }).click();
+  assert.equal(
+    await shelves
+      .getByRole("tab", { name: "系列", exact: true })
+      .getAttribute("aria-selected"),
+    "true",
+  );
   await page.setViewportSize({ width: 1440, height: 1250 });
   await page.goto(base + "?six");
   assert.equal(
     await page.getByRole("button", { name: "更多", exact: true }).count(),
     0,
   );
+  assert.equal(
+    await shelves
+      .locator(
+        ".horizontal-scroll-next:visible, .horizontal-scroll-previous:visible",
+      )
+      .count(),
+    0,
+  );
   await page.goto(base + "?empty");
-  assert.equal(await shelves.count(), 2);
+  assert.equal(await shelves.count(), 1);
+  await shelves.getByRole("tab", { name: "合集", exact: true }).click();
   await shelves
     .first()
     .getByRole("button", { name: "新建合集", exact: true })
@@ -283,6 +437,7 @@ try {
     .waitFor();
   assert.equal(await page.locator(".group-card").count(), 0);
   await page.goto(base);
+  await shelves.getByRole("tab", { name: "系列", exact: true }).click();
   await page
     .getByRole("button", { name: "春日来信", exact: true })
     .first()
@@ -304,11 +459,11 @@ try {
   await page.goto(base + "?lang=en&mode=dark");
   await page.locator(".group-cover img").first().waitFor();
   await page.screenshot({
-    path: "test-results/library-three-sections-dark.png",
+    path: "test-results/library-group-tabs-dark.png",
   });
   assert.deepEqual(errors, []);
   console.log(
-    "Passed independent shelves and work filters, six-card previews, responsive overflow, full catalogues, mixed collection/series navigation, back stack, creation and empty states.",
+    "Passed combined collection/series tabs, single-row paging and edge fades, independent work filters, responsive cards, full catalogues, mixed navigation, back stack, creation and empty states.",
   );
 } finally {
   await browser?.close();

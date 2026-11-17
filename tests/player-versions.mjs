@@ -25,7 +25,7 @@ if(type==='online-player-error')return;
 if(type==='online-media')return {url:location.origin+'/video?episode='+value.episodeId+'&quality='+value.quality,dash:false,quality:value.quality||80,qualities:[{id:80,label:'1080P 高清'},{id:64,label:'720P 高清'}]};
 if(type==='media')return location.origin+'/video?file='+value.fileId;
 if(type==='progress'){for(const e of work.episodes)for(const v of e.versions)for(const f of v.files)if(f.id===value.fileId){f.position=value.position;f.duration=value.duration;}return;}
-if(type==='select-version'){const chosen=work.episodes.find(e=>e.id===value.id).versions.find(v=>v.id===value.versionId);work={...work,episodes:work.episodes.map(e=>project(e,chosen.releaseKey))};window.fixture.work=work;emit(work);return;}
+if(type==='select-version'){window.fixture.switchPosition=document.querySelector('video').currentTime;const chosen=work.episodes.find(e=>e.id===value.id).versions.find(v=>v.id===value.versionId);work={...work,episodes:work.episodes.map(e=>project(e,chosen.releaseKey))};window.fixture.work=work;emit(work);return;}
 throw new Error('Unexpected IPC '+type);}};
 function Harness(){const [state,set]=useState(work);emit=set;return <LocaleContext value={online?"zh":"en"}><TooltipProvider><Player online={online} work={state} active activate={()=>{}}/></TooltipProvider></LocaleContext>};
 createRoot(document.getElementById('root')).render(<Harness/>);`,
@@ -102,12 +102,15 @@ try {
       document.querySelector("video").currentSrc.includes("e1Bfile"),
   );
   await page.waitForFunction(
-    () => Math.abs(document.querySelector("video").currentTime - 0.6) < 0.05,
+    () => Math.abs(document.querySelector("video").currentTime - 0.35) < 0.05,
   );
   assert(
     await page.locator("video").evaluate((v) => v.paused),
     "switching while paused stays paused",
   );
+  await page.locator("video").evaluate((v) => {
+    v.currentTime = 0.5;
+  });
   await page.getByRole("combobox", { name: "Version", exact: true }).click();
   await page.getByRole("option", { name: "Release A", exact: true }).click();
   await page.waitForFunction(
@@ -116,8 +119,28 @@ try {
       document.querySelector("video").currentSrc.includes("e1Afile"),
   );
   await page.waitForFunction(
-    () => Math.abs(document.querySelector("video").currentTime - 0.35) < 0.05,
+    () => Math.abs(document.querySelector("video").currentTime - 0.5) < 0.05,
   );
+  // Zero is an explicit handoff, not a request to use the target's saved position.
+  await page.locator("video").evaluate((v) => {
+    v.currentTime = 0;
+  });
+  for (const [label, file] of [
+    ["Release B", "e1Bfile"],
+    ["Release A", "e1Afile"],
+  ]) {
+    await page.getByRole("combobox", { name: "Version", exact: true }).click();
+    await page.getByRole("option", { name: label, exact: true }).click();
+    await page.waitForFunction((file) => {
+      const v = document.querySelector("video");
+      return (
+        v.readyState >= 2 &&
+        v.currentSrc.includes(file) &&
+        v.currentTime < 0.04 &&
+        v.paused
+      );
+    }, file);
+  }
   await page.getByRole("button", { name: "Next episode", exact: true }).click();
   await page.waitForFunction(
     () =>
@@ -125,6 +148,10 @@ try {
       document.querySelector("video").currentSrc.includes("e2Afile"),
   );
   await page.locator("video").evaluate((v) => v.pause());
+  assert(
+    (await page.locator("video").evaluate((v) => v.currentTime)) >= 0.15,
+    "a different episode uses its own resume position",
+  );
   const calls = await page.evaluate(() => window.fixture.calls);
   assert(
     calls
@@ -162,6 +189,46 @@ try {
       document.querySelector("video").readyState >= 2 &&
       document.querySelector("video").currentSrc.includes("e2Bfile"),
   );
+  // The same position handoff also retains active playback.
+  await page.getByRole("combobox", { name: "Version", exact: true }).click();
+  await page.getByRole("option", { name: "Release A", exact: true }).click();
+  await page.waitForFunction(
+    () =>
+      document.querySelector("video").currentSrc.includes("e2Afile") &&
+      document.querySelector("video").readyState >= 2,
+  );
+  await page.locator("video").evaluate(async (v) => {
+    v.currentTime = 0.1;
+    await v.play();
+  });
+  await page.getByRole("combobox", { name: "Version", exact: true }).click();
+  await page.getByRole("option", { name: "Release B", exact: true }).click();
+  await page.waitForFunction(() => {
+    const v = document.querySelector("video");
+    return v.currentSrc.includes("e2Bfile") && v.readyState >= 2 && !v.paused;
+  });
+  const playing = await page.locator("video").evaluate((v) => {
+    const result = {
+      position: v.currentTime,
+      expected: window.fixture.switchPosition,
+    };
+    v.pause();
+    return result;
+  });
+  assert(
+    Math.abs(playing.position - playing.expected) < 0.2,
+    "playing switch continues at the current timeline position",
+  );
+  await page.getByRole("button", { name: "Episodes", exact: true }).click();
+  await page.locator(".player-queue").waitFor();
+  assert(
+    await page
+      .locator(".player-queue")
+      .evaluate((n) => !!document.fullscreenElement?.contains(n)),
+    "fullscreen menu stays in the fullscreen surface",
+  );
+  await page.keyboard.press("Escape");
+  await page.locator(".player-queue").waitFor({ state: "hidden" });
   await mkdir("test-results", { recursive: true });
   await page.screenshot({ path: "test-results/player-versions.png" });
   await page.goto("http://127.0.0.1:" + server.address().port + "?online");
@@ -182,6 +249,50 @@ try {
       v.currentTime >= 0.5
     );
   });
+  const queueButton = page.getByRole("button", { name: "选集", exact: true });
+  const episodeMenu = page.locator(".player-queue");
+  await queueButton.click();
+  await episodeMenu.waitFor();
+  await page.waitForFunction(
+    () =>
+      !document
+        .querySelector(".player-queue")
+        .getAnimations()
+        .some((a) => a.playState === "running"),
+  );
+  const menuPosition = await episodeMenu.evaluate((n) => {
+    const button = document.querySelector('[aria-label="选集"]'),
+      b = button.getBoundingClientRect(),
+      r = n.getBoundingClientRect();
+    return {
+      gap: b.top - r.bottom,
+      left: r.left,
+      right: r.right,
+      viewport: innerWidth,
+    };
+  });
+  assert(
+    Math.abs(menuPosition.gap - 8) < 1,
+    "episode menu is anchored 8px above its trigger",
+  );
+  assert(menuPosition.left >= 0 && menuPosition.right <= menuPosition.viewport);
+  assert.equal(
+    await episodeMenu
+      .getByRole("button", { name: "关闭", exact: true })
+      .count(),
+    0,
+  );
+  await page.locator(".player-header").click();
+  await episodeMenu.waitFor({ state: "hidden" });
+  await queueButton.click();
+  await page.getByRole("combobox", { name: "清晰度", exact: true }).focus();
+  await episodeMenu.waitFor({ state: "hidden" });
+  await queueButton.click();
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await episodeMenu.waitFor({ state: "hidden" });
+  await queueButton.click();
+  await page.keyboard.press("Escape");
+  await episodeMenu.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "选集", exact: true }).click();
   assert.equal(
     await page.locator(".player-queue > .fade-scroll button").count(),
@@ -216,6 +327,8 @@ try {
       requestAnimationFrame(() => requestAnimationFrame(r)),
     );
   });
+  if (!(await page.locator(".player-queue").isVisible()))
+    await queueButton.click();
   await page.screenshot({
     path: "test-results/player-series-preview.png",
     animations: "disabled",
@@ -227,7 +340,12 @@ try {
     ),
     false,
   );
+  if (!(await page.locator(".player-queue").isVisible()))
+    await queueButton.click();
   const strip = page.locator(".player-queue-groups");
+  await strip.locator(".horizontal-scroll-items").evaluate((n) => {
+    n.scrollLeft = 0;
+  });
   await strip.getByRole("button", { name: "向右翻页", exact: true }).waitFor();
   assert.equal(
     await strip.getByRole("button", { name: "向左翻页", exact: true }).count(),
@@ -250,12 +368,17 @@ try {
   });
   assert.deepEqual(errors, []);
   console.log(
-    "Passed real media version switching, isolated resume positions, next episode, narrow/fullscreen selector and IPC identity checks.",
+    "Passed real media version switching, continuous positions across versions, paused/playing/zero handoffs, next episode, anchored episode menu with outside/focus/blur/Escape dismissal, narrow/fullscreen selectors and IPC identity checks.",
   );
 } catch (error) {
   console.log(
     await page?.evaluate(() => ({
       calls: window.fixture?.calls,
+      queue: [...document.querySelectorAll(".player-queue")].map((n) => ({
+        rect: n.getBoundingClientRect().toJSON(),
+        visible: getComputedStyle(n).visibility,
+        groups: n.querySelector(".horizontal-scroll-items")?.outerHTML,
+      })),
       video: (() => {
         const v = document.querySelector("video");
         return (

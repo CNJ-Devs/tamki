@@ -1,4 +1,9 @@
 import { parseFilename } from "./filename";
+import {
+  organizationSnapshot,
+  organizationStateChanges,
+  type OrganizationSnapshot,
+} from "./organization-state";
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -468,24 +473,38 @@ export class LibraryStore {
       recognition: { ...work.recognition, artworkError: false },
     });
   }
-  queueRecognition(sourceId: string, retryIds: string[] = []) {
+  queueRecognition(
+    sourceId: string,
+    retryIds: string[] = [],
+    requested = false,
+  ) {
+    const selected = new Set(retryIds);
     this.transaction(() => {
       for (const work of this.snapshot().works) {
+        if (requested && !selected.has(work.id)) continue;
         if (!work.episodes.some((e) => !e.missing)) continue;
         const signature = recognitionSignature(work),
           previous = work.recognition;
         if (
+          previous?.status === "running" ||
+          (!requested && previous?.requested && previous.status === "queued")
+        )
+          continue;
+        if (
           !previous ||
           previous.signature !== signature ||
           (previous.status === "queued" && previous.sourceId !== sourceId) ||
-          retryIds.includes(work.id)
+          selected.has(work.id)
         )
           this.setRecognition(work.id, {
             status: "queued",
             sourceId,
             signature,
+            ...(requested ? { requested: true } : {}),
             candidate:
-              previous?.sourceId === sourceId ? previous.candidate : undefined,
+              !requested && previous?.sourceId === sourceId
+                ? previous.candidate
+                : undefined,
           });
       }
     });
@@ -990,10 +1009,13 @@ export class LibraryStore {
       id: collection.id || randomUUID(),
       workIds: [...new Set(collection.workIds)],
     };
-    this.put("collection", value.id, value);
+    this.transaction(() => {
+      this.put("collection", value.id, value);
+      this.recordRelationshipEdit("collection", value, "saved");
+    });
     return value;
   }
-  saveSeries(series: Omit<Series, "id"> & { id?: string }) {
+  saveSeries(series: Omit<Series, "id"> & { id?: string }, manual = true) {
     const ids = new Set(this.snapshot().works.map((w) => w.id));
     if (
       !series.workIds.length ||
@@ -1007,12 +1029,16 @@ export class LibraryStore {
     )
       throw new Error("invalidInput");
     const value = { ...series, id: series.id || randomUUID() };
-    this.put("series", value.id, value);
+    this.transaction(() => {
+      this.put("series", value.id, value);
+      if (manual) this.recordRelationshipEdit("series", value, "saved");
+    });
     return value;
   }
   removeSeries(id: string) {
     this.transaction(() => {
       const series = this.get<Series>("series", id);
+      if (series) this.recordRelationshipEdit("series", series, "removed");
       for (const c of this.all<Collection>("collection")) {
         if (!c.seriesIds?.includes(id)) continue;
         this.put("collection", c.id, {
@@ -1027,9 +1053,220 @@ export class LibraryStore {
     });
   }
   removeCollection(id: string) {
-    this.db
-      .prepare("DELETE FROM records WHERE kind='collection' AND id=?")
-      .run(id);
+    this.transaction(() => {
+      const collection = this.get<Collection>("collection", id);
+      if (collection)
+        this.recordRelationshipEdit("collection", collection, "removed");
+      this.db
+        .prepare("DELETE FROM records WHERE kind='collection' AND id=?")
+        .run(id);
+    });
+  }
+  private recordRelationshipEdit(
+    kind: "collection" | "series",
+    value: Collection | Series,
+    action: "saved" | "removed",
+  ) {
+    const workIds = [
+      ...new Set([
+        ...value.workIds,
+        ...("seriesIds" in value ? value.seriesIds || [] : []).flatMap(
+          (id) => this.get<Series>("series", id)?.workIds || [],
+        ),
+      ]),
+    ];
+    if (action === "saved")
+      this.clearSupersededRelationshipEdits(kind, value.id, workIds);
+    this.put("organization-relationship-edit", `${kind}:${value.id}`, {
+      id: value.id,
+      kind,
+      action,
+      name: value.name,
+      workIds,
+      updatedAt: Date.now(),
+    });
+  }
+  private clearSupersededRelationshipEdits(
+    kind: "collection" | "series",
+    id: string,
+    workIds: string[],
+  ) {
+    for (const edit of this.all<
+      NonNullable<OrganizationContext["relationshipEdits"]>[number]
+    >("organization-relationship-edit")) {
+      if (
+        edit.kind === kind &&
+        (edit.id === id ||
+          (edit.workIds.length === workIds.length &&
+            edit.workIds.every((w) => workIds.includes(w))))
+      )
+        this.db
+          .prepare("DELETE FROM records WHERE kind=? AND id=?")
+          .run("organization-relationship-edit", `${kind}:${edit.id}`);
+    }
+  }
+  organizationSnapshot(): OrganizationSnapshot {
+    const locks: Record<string, Record<string, boolean>> = {};
+    for (const w of this.all<StoredWork>("work"))
+      locks[w.id] =
+        this.get<Record<string, boolean>>("metadata-lock", w.id) || {};
+    const collections = this.all<Collection>("collection");
+    return organizationSnapshot(
+      this.all<StoredWork>("work") as unknown as Record<string, unknown>[],
+      this.all<StoredEpisode>("episode") as unknown as Record<
+        string,
+        unknown
+      >[],
+      [...collections, ...this.all<Series>("series")].map((s, i) => ({
+        ...s,
+        kind: i < collections.length ? "collection" : "series",
+      })) as unknown as Record<string, unknown>[],
+      this.connections().flatMap((c) =>
+        c.roots.map((path) => ({
+          connectionId: c.id,
+          path,
+          depth: c.scanDepths?.[path] ?? 1,
+        })),
+      ),
+      locks,
+      this.all("organization-relationship-edit"),
+    );
+  }
+  organizationChanges(baseline: OrganizationSnapshot) {
+    return organizationStateChanges(baseline, this.organizationSnapshot());
+  }
+  organizationLiveChanges(
+    plan: OrganizationPlan,
+    baseline: OrganizationSnapshot,
+  ) {
+    const current = this.organizationSnapshot();
+    const changes = organizationStateChanges(baseline, current);
+    const scopes =
+      plan.scopes ||
+      plan.files.map((f) => ({
+        connectionId: f.connectionId,
+        path: f.root,
+        depth: 32,
+      }));
+    const inScope = (f: { connectionId: string; path: string }) =>
+      scopes.some(
+        (s) =>
+          s.connectionId === f.connectionId &&
+          relativeDepth(s.path, f.path) !== null &&
+          relativeDepth(s.path, f.path)! <= s.depth + 1,
+      );
+    const known = new Set(
+      plan.files.map((f) => JSON.stringify([f.connectionId, f.path])),
+    );
+    const removed = changes.removed.filter(inScope),
+      modified = changes.modified.filter(inScope);
+    const scopedWorkIds = new Set(
+      Object.values(baseline.files)
+        .filter(inScope)
+        .map((f) => f.workId),
+    );
+    const changedWorkIds = changes.changedWorkIds.filter((id) =>
+      scopedWorkIds.has(id),
+    );
+    const rootsChanged = scopes.some((s) => {
+      const key = JSON.stringify([s.connectionId, s.path]);
+      return baseline.roots[key] !== current.roots[key];
+    });
+    const graph = new Map<string, Set<string>>();
+    const edge = (a: string, b: string) => {
+      if (!graph.has(a)) graph.set(a, new Set());
+      if (!graph.has(b)) graph.set(b, new Set());
+      graph.get(a)!.add(b);
+      graph.get(b)!.add(a);
+    };
+    for (const relationship of [
+      ...(baseline.relationships || []),
+      ...(current.relationships || []),
+    ])
+      for (const id of relationship.workIds)
+        edge("r:" + relationship.id, "w:" + id);
+    const fileMap = new Map(plan.files.map((f) => [f.id, f]));
+    for (const g of plan.groups) {
+      if (g.existingWorkId) edge("g:" + g.id, "w:" + g.existingWorkId);
+      for (const id of g.fileIds) {
+        const file = fileMap.get(id)!;
+        const owner =
+          file.workId || baseline.files[file.episodeId || file.id]?.workId;
+        if (owner) edge("g:" + g.id, "w:" + owner);
+      }
+    }
+    for (const c of plan.collections)
+      for (const id of c.groupIds) edge("p:" + c.id, "g:" + id);
+    const pending = [
+      ...changedWorkIds.map((id) => "w:" + id),
+      ...[...removed, ...modified].map((f) => "w:" + f.workId),
+    ];
+    const byPath = new Map(
+      Object.values(current.files).map((f) => [
+        JSON.stringify([f.connectionId, f.path]),
+        f,
+      ]),
+    );
+    for (const g of plan.groups)
+      for (const id of g.fileIds) {
+        const f = fileMap.get(id)!;
+        const now = byPath.get(JSON.stringify([f.connectionId, f.path]));
+        if (
+          now &&
+          (!baseline.files[now.id] ||
+            baseline.files[now.id].signature !== now.signature) &&
+          (now.size !== f.size || now.modified !== f.modified)
+        )
+          pending.push("g:" + g.id);
+      }
+    if (rootsChanged)
+      pending.push(
+        ...plan.groups.map((g) => "g:" + g.id),
+        ...(plan.delta?.removed || []).map((f) => "w:" + f.workId),
+      );
+    const visited = new Set<string>();
+    for (let i = 0; i < pending.length; i++) {
+      const node = pending[i];
+      if (visited.has(node)) continue;
+      visited.add(node);
+      for (const next of graph.get(node) || [])
+        if (!visited.has(next)) pending.push(next);
+    }
+    const conflictingGroupIds = plan.groups
+      .filter((g) => visited.has("g:" + g.id))
+      .map((g) => g.id);
+    const deferredRemovalIds = (plan.delta?.removed || [])
+      .filter((f) => rootsChanged || visited.has("w:" + f.workId))
+      .map((f) => f.id);
+    return {
+      added: changes.added.filter(
+        (f) =>
+          inScope(f) && !known.has(JSON.stringify([f.connectionId, f.path])),
+      ),
+      removed,
+      modified,
+      changedWorkIds,
+      blocked:
+        rootsChanged ||
+        !!conflictingGroupIds.length ||
+        !!deferredRemovalIds.length,
+      conflictingGroupIds,
+      deferredRemovalIds,
+    };
+  }
+  assertOrganizationSnapshot(
+    plan: OrganizationPlan,
+    groupIds: string[],
+    baseline: OrganizationSnapshot,
+    removals: string[] = [],
+  ) {
+    const changes = this.organizationLiveChanges(plan, baseline);
+    if (
+      groupIds.some((id) => changes.conflictingGroupIds.includes(id)) ||
+      removals.some((id) => changes.deferredRemovalIds.includes(id))
+    )
+      throw new Error("organizationStale");
+    return changes;
   }
   organizationFingerprint(): string {
     return stableId(
@@ -1059,6 +1296,9 @@ export class LibraryStore {
     );
     const snapshot = this.snapshot();
     return {
+      relationshipEdits: this.all<
+        NonNullable<OrganizationContext["relationshipEdits"]>[number]
+      >("organization-relationship-edit"),
       works: snapshot.works.map((w) => {
         const locks =
           this.get<Record<string, boolean>>("metadata-lock", w.id) || {};
@@ -1188,10 +1428,35 @@ export class LibraryStore {
   applyOrganization(
     plan: OrganizationPlan,
     selection: OrganizationApply,
-    baseline: string,
+    baseline: string | OrganizationSnapshot,
   ) {
-    if (this.organizationFingerprint() !== baseline)
-      throw new Error("organizationStale");
+    if (typeof baseline === "string") {
+      if (this.organizationFingerprint() !== baseline)
+        throw new Error("organizationStale");
+    } else
+      this.assertOrganizationSnapshot(
+        plan,
+        selection.groups.map((g) => g.id),
+        baseline,
+        selection.acknowledgedRemovals || [],
+      );
+    const fileExclusions = selection.fileExclusionIds || [];
+    if (
+      new Set(fileExclusions).size !== fileExclusions.length ||
+      fileExclusions.some(
+        (id) =>
+          !plan.fileExclusions?.includes(id) || !plan.unassigned.includes(id),
+      )
+    )
+      throw new Error("invalidInput");
+    const relationshipRemovals = selection.relationshipRemovalIds || [];
+    if (
+      new Set(relationshipRemovals).size !== relationshipRemovals.length ||
+      relationshipRemovals.some(
+        (id) => !plan.relationshipRemovals?.some((r) => r.id === id),
+      )
+    )
+      throw new Error("invalidInput");
     const choices = new Map(selection.groups.map((g) => [g.id, g.title]));
     if (
       choices.size !== selection.groups.length ||
@@ -1204,19 +1469,168 @@ export class LibraryStore {
     )
       throw new Error("invalidInput");
     const groups = plan.groups.filter((g) => choices.has(g.id));
-    const fileMap = new Map(plan.files.map((f) => [f.id, f]));
+    const removals = selection.acknowledgedRemovals || [];
+    if (
+      new Set(removals).size !== removals.length ||
+      removals.some((id) => !plan.delta?.removed.some((f) => f.id === id)) ||
+      (!groups.some((g) => !g.referenceOnly) &&
+        !removals.length &&
+        !relationshipRemovals.length &&
+        !fileExclusions.length)
+    )
+      throw new Error("invalidInput");
+    const existingFiles = this.all<StoredEpisode>("episode");
+    const fileMap = new Map(
+      plan.files.map((f) => {
+        const now = !f.episodeId
+          ? existingFiles.find(
+              (e) =>
+                !e.excluded &&
+                e.connectionId === f.connectionId &&
+                e.path === f.path &&
+                e.size === f.size &&
+                e.modified === f.modified,
+            )
+          : undefined;
+        return [
+          f.id,
+          now ? { ...f, episodeId: now.id, workId: now.workId } : f,
+        ];
+      }),
+    );
     const selectedFiles = groups.flatMap((g) => g.fileIds);
     if (
       new Set(selectedFiles).size !== selectedFiles.length ||
-      selectedFiles.some((id) => !fileMap.has(id))
+      selectedFiles.some(
+        (id) => !fileMap.has(id) || fileExclusions.includes(id),
+      ) ||
+      fileExclusions.some((id) => !fileMap.has(id))
     )
       throw new Error("invalidInput");
     const oldEpisodes = this.all<StoredEpisode>("episode");
     const groupWorks = new Map<string, string>(),
       replacements = new Map<string, Set<string>>();
     const parser = this.snapshot().settings.recognition.parser;
+    const currentState = this.organizationSnapshot();
     this.transaction(() => {
+      // Explicit reviewed relationship deletions are atomic with regrouping.
+      // Omission from AI output never implies deletion of an existing record.
+      for (const id of relationshipRemovals) {
+        const removal = plan.relationshipRemovals!.find((r) => r.id === id)!;
+        if (
+          plan.collections.some(
+            (c) =>
+              selection.collectionIds.includes(c.id) &&
+              c.existingCollectionId === id,
+          )
+        )
+          throw new Error("invalidInput");
+        const current = this.get<Collection>(removal.kind, id);
+        if (!current) continue;
+        const sameMembers = (a: string[] = [], b: string[] = []) =>
+          JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+        if (
+          current.name !== removal.name ||
+          !sameMembers(current.workIds, removal.workIds) ||
+          !sameMembers(current.seriesIds, removal.seriesIds)
+        )
+          throw new Error("organizationStale");
+        this.recordRelationshipEdit(removal.kind, current, "removed");
+        if (removal.kind === "series") {
+          for (const c of this.all<Collection>("collection"))
+            if (c.seriesIds?.includes(id))
+              this.put("collection", c.id, {
+                ...c,
+                seriesIds: c.seriesIds.filter((s) => s !== id),
+                workIds: [...new Set([...c.workIds, ...current.workIds])],
+              });
+        }
+        this.db
+          .prepare("DELETE FROM records WHERE kind=? AND id=?")
+          .run(removal.kind, id);
+      }
+      const removedWorks = new Set<string>();
+      for (const id of fileExclusions) {
+        const f = fileMap.get(id)!;
+        const old = oldEpisodes.find(
+          (e) =>
+            e.connectionId === f.connectionId &&
+            e.path === f.path &&
+            !e.excluded,
+        );
+        if (!old) {
+          this.put("episode", f.episodeId || f.id, {
+            id: f.episodeId || f.id,
+            workId: f.workId || stableId("excluded", f.connectionId, f.root),
+            connectionId: f.connectionId,
+            path: f.path,
+            fileName: f.name,
+            size: f.size,
+            modified: f.modified,
+            duration: f.duration,
+            position: 0,
+            order: 0,
+            number: "",
+            title: "",
+            description: "",
+            missing: false,
+            excluded: true,
+            manual: true,
+            assignmentOrigin: "manual",
+          });
+          continue;
+        }
+        if (
+          typeof baseline !== "string" &&
+          (baseline.files[old.id]?.signature !==
+            currentState.files[old.id]?.signature ||
+            baseline.works[old.workId] !== currentState.works[old.workId])
+        )
+          throw new Error("organizationStale");
+        old.excluded = true;
+        old.manual = true;
+        old.assignmentOrigin = "manual";
+        this.put("episode", old.id, old);
+        removedWorks.add(old.workId);
+      }
+      for (const id of removals) {
+        const old = plan.delta!.removed.find((f) => f.id === id)!;
+        for (const file of oldEpisodes.filter(
+          (e) =>
+            !e.excluded &&
+            e.connectionId === old.connectionId &&
+            e.path === old.path,
+        )) {
+          file.excluded = true;
+          file.manual = true;
+          file.assignmentOrigin = "manual";
+          this.put("episode", file.id, file);
+          removedWorks.add(file.workId);
+        }
+      }
+      for (const id of removedWorks)
+        if (!oldEpisodes.some((e) => e.workId === id && !e.excluded)) {
+          const work = this.get<StoredWork>("work", id);
+          if (work)
+            this.put("work", id, { ...work, excluded: true, resumeId: null });
+          for (const kind of ["series", "collection"])
+            for (const c of this.all<Collection>(kind))
+              if (c.workIds.includes(id))
+                this.put(kind, c.id, {
+                  ...c,
+                  workIds: c.workIds.filter((w) => w !== id),
+                });
+        }
       for (const group of groups) {
+        if (group.referenceOnly) {
+          const work =
+            group.existingWorkId &&
+            this.get<StoredWork>("work", group.existingWorkId);
+          if (!work || work.excluded || group.fileIds.length)
+            throw new Error("organizationStale");
+          groupWorks.set(group.id, work.id);
+          continue;
+        }
         const files = group.fileIds.map((id) => fileMap.get(id)!);
         const previous = files.map((f) =>
           f.episodeId
@@ -1383,7 +1797,7 @@ export class LibraryStore {
       // Commit logical identities in the same transaction as work allocation.
       // Raw media identities and file progress never change during grouping.
       for (const group of groups) {
-        if (!group.episodes) continue; // legacy plans remain one file per episode
+        if (group.referenceOnly || !group.episodes) continue; // legacy plans remain one file per episode
         const layoutIds = group.episodes.flatMap((e) =>
           e.versions.flatMap((v) => v.fileIds),
         );
@@ -1544,6 +1958,19 @@ export class LibraryStore {
               ),
             ],
           });
+      for (const edit of this.all<
+        NonNullable<OrganizationContext["relationshipEdits"]>[number]
+      >("organization-relationship-edit"))
+        this.put("organization-relationship-edit", `${edit.kind}:${edit.id}`, {
+          ...edit,
+          workIds: [
+            ...new Set(
+              edit.workIds.flatMap((id) =>
+                replacements.has(id) ? [...replacements.get(id)!] : [id],
+              ),
+            ),
+          ],
+        });
       for (const collection of plan.collections
         .filter(
           (c) =>
@@ -1600,6 +2027,7 @@ export class LibraryStore {
           }
         }
         this.put(kind, value.id, value);
+        this.clearSupersededRelationshipEdits(kind, value.id, value.workIds);
       }
       const series = this.all<Series>("series");
       const membership = new Set<string>();
@@ -1624,7 +2052,12 @@ export class LibraryStore {
         });
       }
     });
-    return { works: groups.length };
+    return {
+      works: groups.filter((g) => !g.referenceOnly).length,
+      removed: removals.length,
+      excluded: fileExclusions.length,
+      relationshipsRemoved: relationshipRemovals.length,
+    };
   }
   saveTransfer(transfer: Transfer) {
     this.put("transfer", transfer.id, transfer);

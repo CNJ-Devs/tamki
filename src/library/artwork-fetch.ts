@@ -165,9 +165,12 @@ export const publicArtworkFetch: typeof fetch = async (input, init) => {
   throw new Error("artworkUnavailable");
 };
 
-/** Fixed provider CDN paths may use Chromium's configured proxy. Arbitrary AI
+/** Fixed provider CDN and work-detail paths may use Chromium's configured proxy. Arbitrary AI
  * URLs still use the DNS-pinned public fetcher; CDN redirects are never followed. */
-export function providerArtworkFetch(browserFetch: typeof fetch): typeof fetch {
+export function providerArtworkFetch(
+  browserFetch: typeof fetch,
+  publicFetch: typeof fetch = publicArtworkFetch,
+): typeof fetch {
   return async (input, init) => {
     const url = new URL(artworkURL(String(input)));
     const bangumi =
@@ -176,13 +179,17 @@ export function providerArtworkFetch(browserFetch: typeof fetch): typeof fetch {
         url.pathname,
       ) &&
       !url.search;
+    const bangumiPage =
+      ["bgm.tv", "bangumi.tv", "chii.in"].includes(url.hostname) &&
+      /^\/subject\/[1-9]\d*\/?$/.test(url.pathname) &&
+      !url.search;
     const bilibili =
       ["hdslb.com", "biliimg.com"].some(
         (h) => url.hostname === h || url.hostname.endsWith(`.${h}`),
       ) &&
       /^\/bfs\/[-a-zA-Z0-9_/.]+\.(?:jpg|jpeg|png|webp)$/.test(url.pathname) &&
       !url.search;
-    if (bangumi || bilibili) {
+    if (bangumi || bangumiPage || bilibili) {
       const headers = new Headers(init?.headers);
       if (bilibili) headers.set("Referer", "https://www.bilibili.com/");
       const response = await browserFetch(url.href, {
@@ -193,8 +200,36 @@ export function providerArtworkFetch(browserFetch: typeof fetch): typeof fetch {
       });
       if (response.status >= 300 && response.status < 400)
         throw new Error("artworkUnavailable");
+      // Some official Bilibili images use bare "jpg"/"png" MIME labels.
+      // Cache acceptance still requires bounded bytes and a raster signature.
+      const type = response.headers
+        .get("content-type")
+        ?.split(";")[0]
+        .trim()
+        .toLowerCase();
+      const normalized =
+        bilibili && type
+          ? (
+              {
+                jpg: "image/jpeg",
+                jpeg: "image/jpeg",
+                "image/jpg": "image/jpeg",
+                png: "image/png",
+                webp: "image/webp",
+              } as Record<string, string>
+            )[type]
+          : undefined;
+      if (normalized) {
+        const headers = new Headers(response.headers);
+        headers.set("content-type", normalized);
+        return new Response(response.body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers,
+        });
+      }
       return response;
     }
-    return publicArtworkFetch(url.href, init);
+    return publicFetch(url.href, init);
   };
 }

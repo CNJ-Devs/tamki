@@ -183,6 +183,16 @@ export function Fade({
         "--fade-end",
         position < max - 1 && max > 1 ? "16px" : "0px",
       );
+      if (horizontal) {
+        el.style.setProperty(
+          "--fade-start-alpha",
+          position > 1 && max > 1 ? "1" : "0",
+        );
+        el.style.setProperty(
+          "--fade-end-alpha",
+          position < max - 1 && max > 1 ? "1" : "0",
+        );
+      }
     };
     const ro = new ResizeObserver(update);
     ro.observe(el);
@@ -241,24 +251,26 @@ export function HorizontalScroll({
       >
         {children}
       </Fade>
-      {edges.start && (
-        <IconButton
-          className="horizontal-scroll-previous"
-          label={t("scrollPrevious")}
-          onClick={() => page(-1)}
-        >
-          <CaretLeftIcon />
-        </IconButton>
-      )}
-      {edges.end && (
-        <IconButton
-          className="horizontal-scroll-next"
-          label={t("scrollNext")}
-          onClick={() => page(1)}
-        >
-          <CaretRightIcon />
-        </IconButton>
-      )}
+      <IconButton
+        className="horizontal-scroll-previous"
+        label={t("scrollPrevious")}
+        data-visible={edges.start}
+        aria-hidden={!edges.start}
+        disabled={!edges.start}
+        onClick={() => page(-1)}
+      >
+        <CaretLeftIcon />
+      </IconButton>
+      <IconButton
+        className="horizontal-scroll-next"
+        label={t("scrollNext")}
+        data-visible={edges.end}
+        aria-hidden={!edges.end}
+        disabled={!edges.end}
+        onClick={() => page(1)}
+      >
+        <CaretRightIcon />
+      </IconButton>
     </div>
   );
 }

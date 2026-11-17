@@ -57,6 +57,7 @@ import {
 } from "../shared/settings";
 import { OrganizationService } from "./organization";
 import { organizeRequestSchema } from "../shared/organization";
+import { batchRecognitionSchema } from "../shared/recognition";
 import { CaptureStorage } from "../capture/storage";
 import type { VideoDownloadJob, VideoDownloadItem } from "../shared/capture";
 
@@ -337,11 +338,14 @@ export class LibraryService {
           s.workIds.some((id) => members.some((w) => w?.id === id)),
         )
       ) {
-        this.store.saveSeries({
-          id: job.id,
-          name: job.name,
-          workIds: members.map((w) => w!.id),
-        });
+        this.store.saveSeries(
+          {
+            id: job.id,
+            name: job.name,
+            workIds: members.map((w) => w!.id),
+          },
+          false,
+        );
         job.librarySeriesCreated = true;
       }
     }
@@ -512,6 +516,13 @@ export class LibraryService {
         } finally {
           this.emit();
         }
+      case "organize-draft": {
+        const plan = this.organization.resume();
+        if (plan) await this.automatic.pause();
+        return plan;
+      }
+      case "organize-review":
+        return this.organization.saveSelection(value);
       case "organize-progress":
         return this.organization.progress(value);
       case "organize-cancel": {
@@ -573,7 +584,7 @@ export class LibraryService {
       }
       case "organize-apply":
         try {
-          return this.organization.apply(value);
+          return await this.organization.apply(value);
         } finally {
           this.emit();
         }
@@ -595,6 +606,52 @@ export class LibraryService {
           }
           return additions;
         });
+      case "recognize-batch": {
+        const input = batchRecognitionSchema.parse(value);
+        const config = this.settings.snapshot().recognition;
+        if (
+          ![
+            "bangumi",
+            "bilibili",
+            "tmdb",
+            "filename",
+            ...config.sources.map((s) => s.id),
+          ].includes(input.sourceId)
+        )
+          throw new ProviderError("recognitionSourceMissing");
+        if (input.sourceId === "tmdb" && !config.tmdbConfigured)
+          throw new ProviderError("tmdbKeyRequired");
+        const source = this.settings.recognitionSelection(input.sourceId);
+        if (source && !source.model) throw new ProviderError("chooseModel");
+        const works = this.store.snapshot().works;
+        const byId = new Map(works.map((w) => [w.id, w]));
+        if (input.workIds.some((id) => !byId.has(id)))
+          throw new ProviderError("mediaMissing");
+        const queued = input.workIds.filter((id) => {
+          const work = byId.get(id)!;
+          return (
+            work.recognition?.status !== "running" &&
+            work.episodes.some((e) => !e.missing)
+          );
+        });
+        this.automatic.enqueue(queued, input.sourceId);
+        logEvent("recognition.batch.queued", {
+          groups: queued.length,
+          issues: input.workIds.length - queued.length,
+          provider: source?.provider || input.sourceId,
+        });
+        return { queued, skipped: input.workIds.length - queued.length };
+      }
+      case "cancel-recognition-batch": {
+        const input = batchRecognitionSchema
+          .pick({ workIds: true })
+          .parse(value);
+        this.automatic.cancel(input.workIds);
+        logEvent("recognition.batch.cancelled", {
+          groups: input.workIds.length,
+        });
+        return true;
+      }
       case "cancel-recognition":
         this.recognition.cancel(id.parse(value));
         return true;
@@ -603,6 +660,12 @@ export class LibraryService {
         const works = this.store.snapshot().works;
         if (workId && !works.some((w) => w.id === workId))
           throw new ProviderError("mediaMissing");
+        const previous =
+          workId && works.find((w) => w.id === workId)?.recognition;
+        if (workId && previous && previous.requested) {
+          this.automatic.enqueue([workId], previous.sourceId);
+          break;
+        }
         this.automatic.schedule(
           works
             .filter((w) =>

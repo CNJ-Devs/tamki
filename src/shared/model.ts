@@ -1,10 +1,12 @@
 export type Language = "en" | "zh";
 export type Palette = "hazel" | "forest" | "mist" | "iris" | "rose" | "lagoon";
+export type AppIconStyle = "default" | "light" | "color";
 export interface Preferences {
   language: Language;
   palette: Palette;
   mode: "light" | "dark" | "system";
   refreshOnOpen: boolean;
+  appIconStyle?: AppIconStyle;
 }
 export interface Connection {
   id: string;
@@ -93,6 +95,8 @@ export interface Work {
     sourceId: string;
     signature: string;
     candidate?: string;
+    /** An explicit batch request runs even when automatic recognition is off. */
+    requested?: boolean;
     error?: string;
     artworkError?: boolean;
     artworkSource?: { cover: string | null; coverPage: string | null };

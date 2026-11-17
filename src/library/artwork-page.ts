@@ -52,6 +52,34 @@ export function pageArtwork(html: string, page: string): string[] {
     "twitter:image:src",
   ])
     for (const value of properties.get(key) || []) add(value);
+  // Bangumi declares its subject artwork in the main cover element, without
+  // social metadata. Match its exact class and CDN cover path, never avatars
+  // or recommendation images, and only on the provider's subject-detail pages.
+  const pageURL = new URL(page);
+  if (
+    ["bgm.tv", "bangumi.tv", "chii.in"].includes(pageURL.hostname) &&
+    /^\/subject\/[1-9]\d*\/?$/.test(pageURL.pathname)
+  ) {
+    for (const tag of clean.match(/<img\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi) ||
+      []) {
+      const attrs: Record<string, string> = {};
+      for (const m of tag.matchAll(
+        /([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g,
+      ))
+        attrs[m[1].toLowerCase()] = m[2] ?? m[3] ?? m[4];
+      if (!attrs.class?.split(/\s+/).includes("cover") || !attrs.src) continue;
+      try {
+        const image = new URL(decode(attrs.src), page);
+        if (
+          image.hostname === "lain.bgm.tv" &&
+          /^\/(?:r\/\d+\/)?pic\/cover\//.test(image.pathname)
+        ) {
+          add(image.href);
+          break;
+        }
+      } catch {}
+    }
+  }
   // Structured work records can supply the poster when social metadata is absent.
   for (const match of html.matchAll(
     /<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script\s*>/gi,

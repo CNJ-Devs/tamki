@@ -11,6 +11,8 @@ import {
   ipcMain,
   session,
   protocol,
+  nativeImage,
+  nativeTheme,
   type DownloadItem,
 } from "electron";
 import path from "node:path";
@@ -42,6 +44,8 @@ import { CapturePlayback } from "./capture/playback";
 import { VideoDownloads, muxMedia } from "./capture/downloads";
 import { CaptureOverlay } from "./capture/overlay";
 import { downloadActionSchema } from "./shared/capture";
+import { appIconAsset } from "./shared/app-icon";
+import { resolvedTheme } from "./shared/theme";
 
 if (process.env.TAMKI_TEST_PROFILE)
   app.setPath("userData", process.env.TAMKI_TEST_PROFILE);
@@ -481,13 +485,22 @@ function pickerState() {
   };
 }
 function emitPicker() {
-  if (!closing && tabPicker && !tabPicker.webContents.isDestroyed())
-    tabPicker.webContents.send("tabs:state", pickerState());
+  if (closing || !pickerOpen) return;
+  const state = pickerState();
+  if (shell && !shell.webContents.isDestroyed())
+    shell.webContents.send("tabs:state", state);
+  if (
+    pickerMode === "address" &&
+    tabPicker &&
+    !tabPicker.webContents.isDestroyed()
+  )
+    tabPicker.webContents.send("tabs:state", state);
 }
 function dismissPicker(restoreFocus = false) {
   if (!pickerOpen) return;
   pickerOpen = false;
   tabPicker?.setVisible(false);
+  layout();
   emit();
   if (restoreFocus) {
     shell.webContents.focus();
@@ -507,6 +520,13 @@ async function openPicker(mode: PickerMode = "tabs") {
   }
   pickerMode = mode;
   pickerOpen = true;
+  if (mode !== "address") {
+    tabPicker?.setVisible(false);
+    layout();
+    shell.webContents.focus();
+    emit();
+    return;
+  }
   if (!tabPicker) {
     tabPicker = new WebContentsView({
       webPreferences: {
@@ -540,18 +560,45 @@ async function openPicker(mode: PickerMode = "tabs") {
     dismissPicker(true);
     return;
   }
-  if (!pickerOpen || closing) return;
+  if (!pickerOpen || pickerMode !== "address" || closing) return;
   window.contentView.addChildView(tabPicker);
   layout();
   tabPicker.setVisible(true);
   if (mode !== "address") tabPicker.webContents.focus();
   emit();
 }
+let appliedAppIcon = "";
+function updateAppIcon() {
+  if (!library || !window || window.isDestroyed()) return;
+  const asset = appIconAsset(library.store.preferences());
+  if (asset === appliedAppIcon) return;
+  const icon = nativeImage.createFromPath(
+    path.join(__dirname, "ui/assets", asset),
+  );
+  if (icon.isEmpty()) {
+    logEvent("app.icon.failed", { reason: "assetUnavailable" }, "warn");
+    return;
+  }
+  if (process.platform === "darwin") app.dock?.setIcon(icon);
+  else window.setIcon(icon);
+  appliedAppIcon = asset;
+}
 function emitLibrary() {
+  updateAppIcon();
+  updateWindowTheme();
   if (!closing && library && shell && !shell.webContents.isDestroyed())
     shell.webContents.send("library:state", library.snapshot());
   emitPicker();
   capture?.emit();
+}
+function updateWindowTheme() {
+  if (!library || !window || window.isDestroyed()) return;
+  const color = resolvedTheme(
+    library.store.preferences(),
+    nativeTheme.shouldUseDarkColors,
+  ).colors.rail;
+  window.setBackgroundColor(color);
+  window.contentView.setBackgroundColor(color);
 }
 function layout() {
   if (!window || closing) return;
@@ -579,7 +626,7 @@ function layout() {
     y:
       pickerMode === "address"
         ? Math.max(40, Math.min(addressBounds.y, height - 56))
-        : 40,
+        : 48,
     width:
       pickerMode === "address"
         ? Math.max(
@@ -594,17 +641,21 @@ function layout() {
       height -
         (pickerMode === "address"
           ? Math.max(40, Math.min(addressBounds.y, height - 56)) + 8
-          : 56),
+          : 64),
       pickerMode === "address"
         ? Math.max(60, suggestions().length * 56 + 24)
-        : pickerMode === "tabs"
-          ? Math.min(390, 104 + tabs.size * 56)
-          : 520,
+        : 520,
     ),
   });
   const tab = currentWeb();
+  // A transparent trusted shell can paint connected menus over a native web
+  // view. Returning it behind the web view restores normal page input.
+  if (pickerOpen && pickerMode !== "address")
+    window.contentView.addChildView(shell);
+  else if (tab) window.contentView.addChildView(tab.view);
   capture?.sync(tab ? active : 0, tab?.view.webContents.getURL() || "");
-  if (tabPicker && pickerOpen) window.contentView.addChildView(tabPicker);
+  if (tabPicker && pickerOpen && pickerMode === "address")
+    window.contentView.addChildView(tabPicker);
 }
 function select(id: number) {
   if (id !== 0 && !tabs.has(id)) return;
@@ -916,6 +967,11 @@ app
     });
     window = new BaseWindow({
       title: "Tamki",
+      icon: path.join(
+        __dirname,
+        "ui/assets",
+        appIconAsset(library.store.preferences()),
+      ),
       show: process.env.TAMKI_BACKGROUND_TEST !== "1",
       ...(process.platform === "darwin"
         ? {
@@ -927,8 +983,13 @@ app
       height: 860,
       minWidth: 640,
       minHeight: 480,
-      backgroundColor: "#eee9e1",
+      backgroundColor: resolvedTheme(
+        library.store.preferences(),
+        nativeTheme.shouldUseDarkColors,
+      ).colors.rail,
     });
+    updateWindowTheme();
+    nativeTheme.on("updated", updateWindowTheme);
     shell = new WebContentsView({
       webPreferences: {
         preload: path.join(__dirname, "preload.cjs"),
@@ -939,6 +1000,7 @@ app
           process.env.TAMKI_BACKGROUND_TEST === "1",
       },
     });
+    shell.setBackgroundColor("#00000000");
     window.contentView.addChildView(shell);
     const mediaCapture = new MediaCapture([
       new Bilibili(profile.fetch.bind(profile) as typeof fetch),
@@ -994,7 +1056,13 @@ app
       base: __dirname,
       media: mediaCapture,
       pageContext: capturePageContext,
-      onLayout: () => {if(pickerOpen && tabPicker)window.contentView.addChildView(tabPicker);},
+      onLayout: () => {
+        if (!pickerOpen) return;
+        if (pickerMode === "address" && tabPicker)
+          window.contentView.addChildView(tabPicker);
+        else if (pickerMode !== "address")
+          window.contentView.addChildView(shell);
+      },
       play: (result, selected, title) => {
         // User-initiated handoff: stop the source page's media before opening our player.
         void currentWeb()
@@ -1025,11 +1093,13 @@ app
         event.preventDefault();
     });
     ipcMain.handle("tabs:action", async (event, payload: unknown) => {
-      if (
-        !tabPicker ||
-        event.sender !== tabPicker.webContents ||
-        event.senderFrame !== tabPicker.webContents.mainFrame
-      )
+      if (!(
+        (event.sender === shell.webContents &&
+          event.senderFrame === shell.webContents.mainFrame) ||
+        (tabPicker &&
+          event.sender === tabPicker.webContents &&
+          event.senderFrame === tabPicker.webContents.mainFrame)
+      ))
         throw new Error("Untrusted IPC sender");
       const action = z
         .discriminatedUnion("type", [
@@ -1168,12 +1238,15 @@ app
       }
       if (action.type === "download-action") {
         if (action.value.action === "remove")
-          await videoDownloads!.remove(action.value.id, action.value.itemId);
+          await videoDownloads!.remove(
+            action.value.id,
+            action.value.itemIds || action.value.itemId,
+          );
         else
           videoDownloads!.command(
             action.value.id,
             action.value.action,
-            action.value.itemId,
+            action.value.itemIds || action.value.itemId,
           );
       }
       if (action.type === "transfer-action") {
@@ -1443,8 +1516,16 @@ app
         if (action.type === "video-download-action") {
           const input = downloadActionSchema.parse(action.value);
           if (input.action === "remove")
-            await videoDownloads!.remove(input.id, input.itemId);
-          else videoDownloads!.command(input.id, input.action, input.itemId);
+            await videoDownloads!.remove(
+              input.id,
+              input.itemIds || input.itemId,
+            );
+          else
+            videoDownloads!.command(
+              input.id,
+              input.action,
+              input.itemIds || input.itemId,
+            );
           return { ok: true, data: library.snapshot() };
         }
         if (action.type === "online-player-error") {
@@ -1517,6 +1598,7 @@ app
     window.on("blur", () => dismissPicker());
     window.on("close", () => {
       if (closing) return;
+      nativeTheme.removeListener("updated", updateWindowTheme);
       persistSession();
       closing = true;
       for (const tab of tabs.values())

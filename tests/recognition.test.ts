@@ -659,7 +659,7 @@ test("long recognition retries truncated batches with smaller groups without acc
       });
     }) as typeof fetch,
   );
-  assert.deepEqual(calls, [24, 12, 12, 6]);
+  assert.deepEqual(calls, [30, 15, 8, 7, 15, 8, 7]);
   assert.equal(response.kind, "result");
   if (response.kind === "result")
     assert.equal(response.result.files.length, 30);

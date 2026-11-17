@@ -139,8 +139,10 @@ try {
       .boundingBox();
     assert.ok(box.y + box.height <= footer.y);
     await mkdir("test-results", { recursive: true });
-    await page.locator('.recognition-feedback-modal').evaluate(async (el) => {
-      await Promise.all(el.getAnimations().map(a => a.finished.catch(() => {})));
+    await page.locator(".recognition-feedback-modal").evaluate(async (el) => {
+      await Promise.all(
+        el.getAnimations().map((a) => a.finished.catch(() => {})),
+      );
     });
     await page.screenshot({
       path: "test-results/recognition-feedback-" + scope + ".png",

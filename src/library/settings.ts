@@ -947,6 +947,7 @@ export class SettingsService {
             "filename",
             "tmdb",
             "bangumi",
+            "bilibili",
             ...settings.recognition.sources.map((s) => s.id),
           ].includes(patch.defaultSourceId)
         )

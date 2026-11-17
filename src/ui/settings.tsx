@@ -1,4 +1,5 @@
 import type { LibraryState, Palette, Preferences } from "../shared/model";
+import { appIconAsset, appIconStyles } from "../shared/app-icon";
 import { useRef, useState } from "react";
 import { PageHeader, Fade, FormField, Choice } from "./common";
 import {
@@ -7,6 +8,7 @@ import {
   FieldLabel,
   FieldSet,
   FieldLegend,
+  FieldDescription,
 } from "./components/ui/field";
 import { RadioGroup, RadioGroupItem } from "./components/ui/radio-group";
 import { Checkbox } from "./components/ui/checkbox";
@@ -74,6 +76,60 @@ export function Settings({
                         <RadioGroupItem
                           value={key}
                           aria-label={t(key as Palette)}
+                        />
+                      </label>
+                    ))}
+                  </RadioGroup>
+                </FieldSet>
+                <FieldSet>
+                  <FieldLegend>{t("appIcon")}</FieldLegend>
+                  <FieldDescription>{t("appIconHelp")}</FieldDescription>
+                  <RadioGroup
+                    aria-label={t("appIcon")}
+                    className="app-icon-grid"
+                    value={p.appIconStyle || "default"}
+                    onValueChange={(value) =>
+                      update({
+                        appIconStyle: value as Preferences["appIconStyle"],
+                      })
+                    }
+                  >
+                    {appIconStyles.map((style) => (
+                      <label
+                        className="palette-option app-icon-option"
+                        key={style}
+                      >
+                        <img
+                          src={`assets/${appIconAsset({ ...p, appIconStyle: style })}`}
+                          alt=""
+                          width="72"
+                          height="72"
+                        />
+                        <span>
+                          {t(
+                            style === "default"
+                              ? "appIconDefault"
+                              : style === "light"
+                                ? "appIconLight"
+                                : "appIconColor",
+                          )}
+                        </span>
+                        <span className="muted">
+                          {t(
+                            style === "default"
+                              ? "appIconFixed"
+                              : "appIconFollowsTheme",
+                          )}
+                        </span>
+                        <RadioGroupItem
+                          value={style}
+                          aria-label={t(
+                            style === "default"
+                              ? "appIconDefault"
+                              : style === "light"
+                                ? "appIconLight"
+                                : "appIconColor",
+                          )}
                         />
                       </label>
                     ))}

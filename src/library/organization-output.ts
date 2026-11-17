@@ -140,6 +140,7 @@ export function inspectOrganization(
   files: OrganizationFile[],
   references: Map<string, string[]>,
   fileRefs: Map<string, string>,
+  anchors: ReadonlySet<string> = new Set(),
 ) {
   let proposal: z.infer<typeof organizationAnalysisSchema>;
   try {
@@ -222,7 +223,7 @@ export function inspectOrganization(
     .map(([id]) => fileRefs.get(id)!);
   if (feedback.missing.length || feedback.duplicates.length)
     add("coverage", "groups");
-  const identities = new Set<string>();
+  const identities = new Set<string>(anchors);
   for (const g of proposal.groups) {
     if (reservedOrganizationIdentity(g.identity))
       add("invalidGroupIdentity", "groups", g.identity);
@@ -268,8 +269,15 @@ export function decodeOrganization(
   files: OrganizationFile[],
   references: Map<string, string[]>,
   fileRefs: Map<string, string>,
+  anchors: ReadonlySet<string> = new Set(),
 ) {
-  const inspected = inspectOrganization(text, files, references, fileRefs);
+  const inspected = inspectOrganization(
+    text,
+    files,
+    references,
+    fileRefs,
+    anchors,
+  );
   const { feedback } = inspected;
   const first = feedback.issues[0];
   if (first?.reason === "coverage")

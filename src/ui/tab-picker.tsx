@@ -1,7 +1,12 @@
 import { Input } from "./components/ui/input";
+import {
+  InputGroup,
+  InputGroupInput,
+  InputGroupAddon,
+} from "./components/ui/input-group";
 import { PencilSimpleIcon, TrashIcon, StarIcon } from "@phosphor-icons/react";
 import type { BrowserBookmark } from "../shared/model";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { GlobeIcon, HouseIcon, PlayCircleIcon } from "@phosphor-icons/react";
 import type { TabPickerState } from "../shared/model";
@@ -15,14 +20,42 @@ import {
 } from "./components/ui/command";
 import { LocaleContext, useI18n } from "./i18n";
 import { applyTheme } from "./theme";
-import { VideoTask, DownloadRate } from "./tasks";
+import {
+  VideoTask,
+  DownloadRate,
+  TaskSelectionBar,
+  type TaskAction,
+} from "./tasks";
 import { TooltipProvider } from "./components/ui/tooltip";
-import { Button, IconButton } from "./common";
-import { PauseIcon, PlayIcon } from "@phosphor-icons/react";
+import { Button, IconButton, Confirm } from "./common";
+import {
+  PauseIcon,
+  PlayIcon,
+  MagnifyingGlassIcon,
+  DownloadSimpleIcon,
+  ClockCounterClockwiseIcon,
+} from "@phosphor-icons/react";
 import { toast, Toaster } from "sonner";
 import { errorMessage } from "./i18n";
+import {
+  Empty,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "./components/ui/empty";
 
-function Picker() {
+function PanelEmpty({ title, icon }: { title: string; icon: ReactNode }) {
+  return (
+    <Empty className="quick-panel-empty" role="status">
+      <EmptyHeader>
+        <EmptyMedia variant="icon">{icon}</EmptyMedia>
+        <EmptyTitle>{title}</EmptyTitle>
+      </EmptyHeader>
+    </Empty>
+  );
+}
+
+export function Picker({ embedded = false }: { embedded?: boolean }) {
   const [state, setState] = useState<TabPickerState>();
   useEffect(() => {
     const off = window.tamkiTabs.onState(setState);
@@ -30,19 +63,19 @@ function Picker() {
     return off;
   }, []);
   useEffect(() => {
-    if (!state) return;
+    if (!state || embedded) return;
     const update = () => applyTheme(state.preferences);
     update();
     const query = matchMedia("(prefers-color-scheme: dark)");
     query.addEventListener("change", update);
     return () => query.removeEventListener("change", update);
-  }, [state?.preferences]);
+  }, [state?.preferences, embedded]);
   return (
     state && (
       <LocaleContext value={state.preferences.language}>
         <TooltipProvider delayDuration={350}>
           <QuickPanel state={state} />
-          <Toaster position="bottom-center" />
+          {!embedded && <Toaster position="bottom-center" />}
         </TooltipProvider>
       </LocaleContext>
     )
@@ -83,25 +116,24 @@ function QuickPanel({ state }: { state: TabPickerState }) {
       </div>
     );
   if (state.mode === "bookmarks") return <Bookmarks state={state} />;
+  if (state.mode === "tasks") return <QuickTasks state={state} />;
   return (
     <div
       className="native-tab-picker quick-panel"
       role="dialog"
-      aria-label={t(state.mode === "history" ? "browserHistory" : "tasks")}
+      aria-label={t("browserHistory")}
     >
-      <header>
-        <strong>
-          {t(state.mode === "history" ? "browserHistory" : "tasks")}
-        </strong>
+      <header className="quick-panel-header">
+        <strong>{t("browserHistory")}</strong>
       </header>
-      {state.mode === "history" ? (
-        <Command shouldFilter={false}>
-          <CommandInput
-            value={query}
-            onValueChange={setQuery}
-            placeholder={t("search")}
-          />
-          <CommandList>
+      <Command shouldFilter={false}>
+        <CommandInput
+          value={query}
+          onValueChange={setQuery}
+          placeholder={t("search")}
+        />
+        <CommandList>
+          <CommandGroup>
             {(state.history || [])
               .filter((entry) =>
                 `${entry.title} ${entry.url}`
@@ -127,77 +159,182 @@ function QuickPanel({ state }: { state: TabPickerState }) {
                   </span>
                 </CommandItem>
               ))}
-            <CommandEmpty>{t("noResults")}</CommandEmpty>
-          </CommandList>
-        </Command>
-      ) : (
-        <>
-          <div className="quick-task-list">
-            {(state.jobs || []).map((job) => (
-              <VideoTask
-                key={job.id}
-                job={job}
-                onPlayEpisode={(_episodeId, itemId) =>
+          </CommandGroup>
+          <CommandEmpty className="quick-panel-command-empty">
+            <PanelEmpty
+              title={t(
+                state.history?.length ? "noResults" : "noBrowserHistory",
+              )}
+              icon={
+                state.history?.length ? (
+                  <MagnifyingGlassIcon />
+                ) : (
+                  <ClockCounterClockwiseIcon />
+                )
+              }
+            />
+          </CommandEmpty>
+        </CommandList>
+      </Command>
+    </div>
+  );
+}
+
+function QuickTasks({ state }: { state: TabPickerState }) {
+  const t = useI18n();
+  const [selected, setSelected] = useState(() => new Set<string>());
+  const [confirmation, setConfirmation] = useState<"cancel" | "remove" | null>(
+    null,
+  );
+  const jobs = state.jobs || [];
+  const items = jobs.flatMap((job) => job.items);
+  const toggle = (ids: string[], checked: boolean) =>
+    setSelected((old) => {
+      const next = new Set(old);
+      for (const id of ids)
+        if (checked) next.add(id);
+        else next.delete(id);
+      return next;
+    });
+  const batch = async (action: TaskAction) => {
+    const results = await Promise.allSettled(
+      jobs.flatMap((job) => {
+        const itemIds = job.items
+          .filter((item) => selected.has(item.id))
+          .map((item) => item.id);
+        return itemIds.length
+          ? [
+              window.tamkiTabs.action("download-action", {
+                id: job.id,
+                action,
+                itemIds,
+              }),
+            ]
+          : [];
+      }),
+    );
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected")
+      toast.error(errorMessage(failed.reason, t));
+    if (action === "remove") setSelected(new Set());
+  };
+  return (
+    <div
+      className="native-tab-picker quick-panel"
+      role="dialog"
+      aria-label={t("tasks")}
+    >
+      <header className="quick-panel-header">
+        <strong>{t("tasks")}</strong>
+        {!!items.length && (
+          <TaskSelectionBar
+            items={items}
+            selected={selected}
+            toggleAll={(checked) =>
+              toggle(
+                items.map((item) => item.id),
+                checked,
+              )
+            }
+            command={(action) => {
+              if (action === "cancel" || action === "remove")
+                setConfirmation(action);
+              else void batch(action);
+            }}
+          />
+        )}
+      </header>
+      <div className="quick-task-list">
+        {(state.jobs || []).map((job) => (
+          <VideoTask
+            key={job.id}
+            job={job}
+            selection={selected}
+            onSelection={toggle}
+            onPlayEpisode={(_episodeId, itemId) =>
+              void window.tamkiTabs
+                .action("play-download", { jobId: job.id, itemId })
+                .catch((error) => toast.error(errorMessage(error, t)))
+            }
+            onCommand={(action, itemId) =>
+              window.tamkiTabs.action("download-action", {
+                id: job.id,
+                action,
+                ...(Array.isArray(itemId) ? { itemIds: itemId } : { itemId }),
+              })
+            }
+          />
+        ))}
+        {(state.transfers || []).map((task) => (
+          <div className="quick-task" key={task.id}>
+            <b>{task.name}</b>
+            <small>
+              {t(task.state)} · {Math.round(task.received / 1048576)} MiB
+              <DownloadRate
+                items={[
+                  {
+                    id: task.id,
+                    state: task.state === "interrupted" ? "failed" : task.state,
+                    stage: "transferring",
+                    received: task.received,
+                  },
+                ]}
+              />
+            </small>
+            {["running", "paused", "interrupted"].includes(task.state) && (
+              <IconButton
+                label={t(
+                  task.state === "running" ? "pause" : "resumeDownloadTask",
+                )}
+                onClick={() =>
                   void window.tamkiTabs
-                    .action("play-download", { jobId: job.id, itemId })
+                    .action("transfer-action", {
+                      id: task.id,
+                      action: task.state === "running" ? "pause" : "resume",
+                    })
                     .catch((error) => toast.error(errorMessage(error, t)))
                 }
-                onCommand={(action, itemId) =>
-                  window.tamkiTabs.action("download-action", {
-                    id: job.id,
-                    action,
-                    itemId,
-                  })
-                }
-              />
-            ))}
-            {(state.transfers || []).map((task) => (
-              <div className="quick-task" key={task.id}>
-                <b>{task.name}</b>
-                <small>
-                  {t(task.state)} · {Math.round(task.received / 1048576)} MiB
-                  <DownloadRate
-                    items={[
-                      {
-                        id: task.id,
-                        state:
-                          task.state === "interrupted" ? "failed" : task.state,
-                        stage: "transferring",
-                        received: task.received,
-                      },
-                    ]}
-                  />
-                </small>
-                {["running", "paused", "interrupted"].includes(task.state) && (
-                  <IconButton
-                    label={t(
-                      task.state === "running" ? "pause" : "resumeDownloadTask",
-                    )}
-                    onClick={() =>
-                      void window.tamkiTabs
-                        .action("transfer-action", {
-                          id: task.id,
-                          action: task.state === "running" ? "pause" : "resume",
-                        })
-                        .catch((error) => toast.error(errorMessage(error, t)))
-                    }
-                  >
-                    {task.state === "running" ? <PauseIcon /> : <PlayIcon />}
-                  </IconButton>
-                )}
-              </div>
-            ))}
-            {!state.jobs?.length && !state.transfers?.length && (
-              <p>{t("downloadNoMatches")}</p>
+              >
+                {task.state === "running" ? <PauseIcon /> : <PlayIcon />}
+              </IconButton>
             )}
           </div>
-          <button
-            className="quick-all-tasks"
-            onClick={() => void window.tamkiTabs.action("all-tasks")}
-          >
-            {t("allTasks")}
-          </button>
-        </>
+        ))}
+        {!state.jobs?.length && !state.transfers?.length && (
+          <PanelEmpty title={t("emptyTasks")} icon={<DownloadSimpleIcon />} />
+        )}
+      </div>
+      <Button
+        variant="secondary"
+        className="quick-all-tasks"
+        onClick={() => void window.tamkiTabs.action("all-tasks")}
+      >
+        {t("allTasks")}
+      </Button>
+
+      {confirmation && (
+        <Confirm
+          title={t(
+            confirmation === "cancel"
+              ? "downloadCancelTitle"
+              : "removeDownloadTask",
+          )}
+          description={t(
+            confirmation === "cancel"
+              ? "downloadCancelBody"
+              : "removeDownloadTaskBody",
+          )}
+          action={t(
+            confirmation === "cancel"
+              ? "downloadCancelAction"
+              : "removeDownloadTask",
+          )}
+          onClose={() => setConfirmation(null)}
+          onConfirm={() => {
+            void batch(confirmation);
+            setConfirmation(null);
+          }}
+        />
       )}
     </div>
   );
@@ -227,7 +364,9 @@ function Bookmarks({ state }: { state: TabPickerState }) {
       role="dialog"
       aria-label={t("bookmarks")}
     >
-      <strong>{t("bookmarks")}</strong>
+      <header className="quick-panel-header">
+        <strong>{t("bookmarks")}</strong>
+      </header>
       {edit ? (
         <form
           onSubmit={(e) => {
@@ -264,13 +403,18 @@ function Bookmarks({ state }: { state: TabPickerState }) {
         </form>
       ) : (
         <>
-          <Input
-            autoFocus
-            aria-label={t("search")}
-            placeholder={t("search")}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
+          <InputGroup>
+            <InputGroupInput
+              autoFocus
+              aria-label={t("search")}
+              placeholder={t("search")}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            <InputGroupAddon>
+              <MagnifyingGlassIcon />
+            </InputGroupAddon>
+          </InputGroup>
           <div className="bookmark-list">
             {items.map((b) => (
               <div className="bookmark-row" key={b.id}>
@@ -299,11 +443,18 @@ function Bookmarks({ state }: { state: TabPickerState }) {
               </div>
             ))}
             {!items.length && (
-              <p>
-                {t(
+              <PanelEmpty
+                title={t(
                   state.browser.bookmarks?.length ? "noResults" : "noBookmarks",
                 )}
-              </p>
+                icon={
+                  state.browser.bookmarks?.length ? (
+                    <MagnifyingGlassIcon />
+                  ) : (
+                    <StarIcon />
+                  )
+                }
+              />
             )}
           </div>
         </>
@@ -336,15 +487,20 @@ function TabSearch({ state }: { state: TabPickerState }) {
         }
       }}
     >
+      <header className="quick-panel-header">
+        <strong>{t("allTabs")}</strong>
+      </header>
       <Command>
         <CommandInput
           ref={input}
           value={query}
           onValueChange={setQuery}
-          placeholder={t("allTabs")}
+          placeholder={t("search")}
         />
         <CommandList ref={list}>
-          <CommandEmpty>{t("noResults")}</CommandEmpty>
+          <CommandEmpty className="quick-panel-command-empty">
+            <PanelEmpty title={t("noResults")} icon={<MagnifyingGlassIcon />} />
+          </CommandEmpty>
           <CommandGroup>
             <CommandItem
               value={`0 ${t("home")} ${t("library")}`}
@@ -372,5 +528,7 @@ function TabSearch({ state }: { state: TabPickerState }) {
     </div>
   );
 }
-document.documentElement.classList.add("tab-picker-surface");
-createRoot(document.getElementById("root")!).render(<Picker />);
+if (location.pathname.endsWith("/tab-picker.html")) {
+  document.documentElement.classList.add("tab-picker-surface");
+  createRoot(document.getElementById("root")!).render(<Picker />);
+}

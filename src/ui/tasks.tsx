@@ -23,6 +23,7 @@ import {
   TextTip,
 } from "./common";
 import { Progress } from "./components/ui/progress";
+import { Checkbox } from "./components/ui/checkbox";
 import {
   Collapsible,
   CollapsibleTrigger,
@@ -128,12 +129,97 @@ function fraction(item: VideoDownloadItem) {
     : (item.progress ??
         (item.total ? Math.min(0.9, (item.received / item.total) * 0.9) : 0));
 }
+export type TaskAction = "pause" | "resume" | "retry" | "cancel" | "remove";
+export function TaskSelectionBar({
+  items,
+  selected,
+  toggleAll,
+  command,
+}: {
+  items: VideoDownloadItem[];
+  selected: Set<string>;
+  toggleAll(checked: boolean): void;
+  command(action: TaskAction): void;
+}) {
+  const t = useI18n(),
+    chosen = items.filter((i) => selected.has(i.id));
+  return (
+    <div className="download-selection-bar">
+      <Checkbox
+        aria-label={t("selectAllDownloads")}
+        checked={
+          items.length > 0 && chosen.length === items.length
+            ? true
+            : chosen.length
+              ? "indeterminate"
+              : false
+        }
+        onCheckedChange={(v) => toggleAll(v === true)}
+      />
+      <span aria-live="polite">
+        {t("downloadSelectedCount").replace("{n}", String(chosen.length))}
+      </span>
+      <div className="actions">
+        <IconButton
+          label={t("bulkPause")}
+          disabled={
+            !chosen.some((i) => ["queued", "running"].includes(i.state))
+          }
+          onClick={() => command("pause")}
+        >
+          <PauseIcon />
+        </IconButton>
+        <IconButton
+          label={t("bulkResume")}
+          disabled={!chosen.some((i) => i.state === "paused")}
+          onClick={() => command("resume")}
+        >
+          <PlayIcon />
+        </IconButton>
+        <IconButton
+          label={t("bulkRetry")}
+          disabled={
+            !chosen.some((i) => ["failed", "cancelled"].includes(i.state))
+          }
+          onClick={() => command("retry")}
+        >
+          <ArrowClockwiseIcon />
+        </IconButton>
+        <IconButton
+          label={t("bulkCancel")}
+          disabled={
+            !chosen.some((i) =>
+              ["queued", "running", "paused", "failed"].includes(i.state),
+            )
+          }
+          onClick={() => command("cancel")}
+        >
+          <XIcon />
+        </IconButton>
+        <IconButton
+          label={t("bulkRemove")}
+          disabled={
+            !chosen.length ||
+            !chosen.every((i) =>
+              ["completed", "cancelled", "failed"].includes(i.state),
+            )
+          }
+          onClick={() => command("remove")}
+        >
+          <TrashIcon />
+        </IconButton>
+      </div>
+    </div>
+  );
+}
 export function VideoTask({
   job,
   state,
   play,
   onCommand,
   onPlayEpisode,
+  selection,
+  onSelection,
 }: {
   job: VideoDownloadJob;
   state?: LibraryState;
@@ -141,16 +227,24 @@ export function VideoTask({
   onPlayEpisode?(episodeId: string, itemId: string): void;
   onCommand?(
     action: "pause" | "resume" | "retry" | "cancel" | "remove",
-    itemId?: string,
+    itemId?: string | string[],
   ): Promise<unknown>;
+  selection?: Set<string>;
+  onSelection?(ids: string[], checked: boolean): void;
 }) {
   const t = useI18n();
   const [expanded, setExpanded] = useState(false),
-    [cancel, setCancel] = useState<{ itemId?: string } | null>(null),
-    [remove, setRemove] = useState<{ itemId?: string } | null>(null);
+    [cancel, setCancel] = useState<{ itemId?: string | string[] } | null>(null),
+    [remove, setRemove] = useState<{ itemId?: string | string[] } | null>(null);
+  const selected = selection || new Set<string>();
+  const toggle = (ids: string[], checked: boolean) =>
+    onSelection?.(ids, checked);
+  const selectedIds = job.items
+    .filter((i) => selected.has(i.id))
+    .map((i) => i.id);
   const command = (
     action: "pause" | "resume" | "retry" | "cancel" | "remove",
-    itemId?: string,
+    itemId?: string | string[],
   ) =>
     void (
       onCommand
@@ -158,7 +252,7 @@ export function VideoTask({
         : window.tamki.library("video-download-action", {
             id: job.id,
             action,
-            itemId,
+            ...(Array.isArray(itemId) ? { itemIds: itemId } : { itemId }),
           })
     ).catch((e) => toast.error(errorMessage(e, t)));
   const buttons = (items: VideoDownloadItem[], itemId?: string) => {
@@ -285,6 +379,13 @@ export function VideoTask({
   const row = (item: VideoDownloadItem) => (
     <article className="download-task-item" key={item.id}>
       <div className="task-top">
+        {onSelection && (
+          <Checkbox
+            aria-label={item.name}
+            checked={selected.has(item.id)}
+            onCheckedChange={(v) => toggle([item.id], v === true)}
+          />
+        )}
         <div className="task-copy">
           <TextTip>
             {[job.groups?.find((g) => g.id === item.groupId)?.title, item.name]
@@ -318,6 +419,24 @@ export function VideoTask({
         onOpenChange={setExpanded}
       >
         <div className="task-top">
+          {onSelection && (
+            <Checkbox
+              aria-label={job.name}
+              checked={
+                selectedIds.length === job.items.length
+                  ? true
+                  : selectedIds.length
+                    ? "indeterminate"
+                    : false
+              }
+              onCheckedChange={(v) =>
+                toggle(
+                  job.items.map((i) => i.id),
+                  v === true,
+                )
+              }
+            />
+          )}
           <div className="download-task-heading">
             {job.series ? <FolderSimpleIcon /> : <DownloadSimpleIcon />}
             <div className="task-copy">
@@ -404,6 +523,18 @@ export function Tasks({
   const t = useI18n();
   const [filter, setFilter] = useState("all"),
     [cancel, setCancel] = useState<Transfer | null>(null);
+  const [selected, setSelected] = useState(new Set<string>()),
+    [batchConfirm, setBatchConfirm] = useState<"cancel" | "remove" | null>(
+      null,
+    );
+  const toggle = (ids: string[], checked: boolean) =>
+    setSelected((old) => {
+      const next = new Set(old);
+      for (const id of ids)
+        if (checked) next.add(id);
+        else next.delete(id);
+      return next;
+    });
   const active = (value: string) =>
     ["queued", "running", "paused"].includes(value);
   const matches = (items: { state: string }[]) =>
@@ -418,6 +549,28 @@ export function Tasks({
     void window.tamki
       .library("transfer", { id, action })
       .catch((e) => toast.error(errorMessage(e, t)));
+  const batch = async (action: TaskAction) => {
+    const results = await Promise.allSettled(
+      jobs.flatMap((job) => {
+        const itemIds = job.items
+          .filter((i) => selected.has(i.id))
+          .map((i) => i.id);
+        return itemIds.length
+          ? [
+              window.tamki.library("video-download-action", {
+                id: job.id,
+                action,
+                itemIds,
+              }),
+            ]
+          : [];
+      }),
+    );
+    const failed = results.find((r) => r.status === "rejected");
+    if (failed?.status === "rejected")
+      toast.error(errorMessage(failed.reason, t));
+    if (action === "remove") setSelected(new Set());
+  };
   return (
     <section className="page tasks-page">
       <PageHeader
@@ -443,6 +596,23 @@ export function Tasks({
           </ToggleGroup>
         }
       />
+      {!!jobs.length && (
+        <TaskSelectionBar
+          items={jobs.flatMap((j) => j.items)}
+          selected={selected}
+          toggleAll={(v) =>
+            toggle(
+              jobs.flatMap((j) => j.items.map((i) => i.id)),
+              v,
+            )
+          }
+          command={(action) => {
+            if (action === "cancel" || action === "remove")
+              setBatchConfirm(action);
+            else void batch(action);
+          }}
+        />
+      )}
       <Fade className="page-body">
         <div className="tasks-content">
           {!jobs.length && !transfers.length ? (
@@ -452,7 +622,14 @@ export function Tasks({
           ) : (
             <>
               {jobs.map((job) => (
-                <VideoTask key={job.id} job={job} state={state} play={play} />
+                <VideoTask
+                  key={job.id}
+                  job={job}
+                  state={state}
+                  play={play}
+                  selection={selected}
+                  onSelection={toggle}
+                />
               ))}
               {transfers.map((task) => (
                 <article className="task-row" key={task.id}>
@@ -522,6 +699,30 @@ export function Tasks({
           onConfirm={() => {
             command(cancel.id, "cancel");
             setCancel(null);
+          }}
+        />
+      )}
+      {batchConfirm && (
+        <Confirm
+          title={t(
+            batchConfirm === "cancel"
+              ? "downloadCancelTitle"
+              : "removeDownloadTask",
+          )}
+          description={t(
+            batchConfirm === "cancel"
+              ? "downloadCancelBody"
+              : "removeDownloadTaskBody",
+          )}
+          action={t(
+            batchConfirm === "cancel"
+              ? "downloadCancelAction"
+              : "removeDownloadTask",
+          )}
+          onClose={() => setBatchConfirm(null)}
+          onConfirm={() => {
+            void batch(batchConfirm);
+            setBatchConfirm(null);
           }}
         />
       )}

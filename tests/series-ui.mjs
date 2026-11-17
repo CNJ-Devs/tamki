@@ -56,6 +56,7 @@ try {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto("http://127.0.0.1:" + server.address().port);
+  await page.getByRole("tab", { name: "系列", exact: true }).click();
   await page.getByRole("button", { name: "新建系列", exact: true }).click();
   await page.getByLabel("系列名称").fill("测试系列");
   await page.locator("label.folder-row").filter({ hasText: "第一部" }).click();
@@ -150,6 +151,7 @@ try {
   );
   await page.getByRole("button", { name: "取消", exact: true }).click();
   await page.getByRole("button", { name: "返回", exact: true }).click();
+  await page.getByRole("tab", { name: "系列", exact: true }).click();
   await page
     .getByRole("button", { name: "改名系列", exact: true })
     .first()

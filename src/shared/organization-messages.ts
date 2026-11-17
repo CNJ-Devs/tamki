@@ -1,13 +1,55 @@
 export const organizationMessages = {
   en: {
+    organizationFileExclusions: "Remove supplementary material from library",
+    organizationExcludeFile: "Exclude from library · {name}",
+    organizationFileExclusionHelp:
+      "Applying excludes checked supplementary files from the library index and normal rescans. Source media is preserved; these files will not remain as empty or duplicate works.",
+    organizationRelationshipRemovals: "Remove series / collections",
+    organizationRemoveRelationship: "Remove relationship · {name}",
+    organizationRelationshipRemovalHelp:
+      "Only checked series or collection records will be removed when you apply. Their works and source files are preserved.",
+    organizationDeferred: "Deferred",
+    organizationDeferredFeedback:
+      "These related works are deferred from this application and remain pending for the next increment. You can still review and revise the current snapshot; affected proposals remain deferred.",
+    organizationRelationshipRename: "Rename: {before} → {after}",
+    organizationDeferredSummary:
+      "{count} related proposals were deferred after removals or edits. Independent proposals can still be applied.",
+    organizationAllDeferred:
+      "All proposals are affected by removals, edits or scope changes. The draft is retained; regenerate before applying.",
+    organizationDeferredHelp:
+      "Deferred proposals remain visible and unapproved. They are not deleted or included in this application; their files, prior decisions and change evidence are included in the next incremental review.",
+    organizationMode: "Review mode",
+    organizationIncremental: "Incremental review",
+    organizationFull: "Review everything again",
+    organizationChanges: "Changes",
+    organizationAdded: "Added / not yet approved",
+    organizationModified: "Modified",
+    organizationRemoved: "Removed",
+    organizationAcknowledgeRemoval: "Confirm removal from library",
+    organizationRemovalHelp:
+      "Check only removals you accept. Applying removes these missing files from the library index; it does not delete source media. Unchecked items remain pending.",
+    organizationBaselineHelp:
+      "Only applied decisions count as approved. Unapplied drafts and unresolved items remain pending. A first review has no prior baseline.",
+    organizationDeltaSummary:
+      "This review: {pending} files · {unchanged} unchanged files retained",
+    organizationLiveAdded:
+      "{count} files were added after this snapshot. They are deferred to the next incremental review; this proposal can still be applied.",
+    organizationLiveBlocked:
+      "Files or organization data in this scope were removed or modified after the snapshot. This proposal is preserved, but must be regenerated before applying.",
+    organizationNoChanges:
+      "No pending changes. Applied decisions are retained.",
     smartOrganize: "Smart organization",
     organizationFeedback: "Review and feedback",
     organizationNoSeries: "No series suggestions",
     organizationUnselectedMembers:
       "First review and select these works in Works: {names}",
+    organizationMembersDeferred: "Members deferred",
+    organizationMembersUnselected: "Members not selected",
+    organizationDeferredMembers:
+      "These works are deferred to the next increment, so this relationship is also deferred: {names}",
     organizationFlaggedCount: "Flagged items · {count}",
     organizationReviewMeaning:
-      "Lists all AI-flagged questions, relationship name changes and unassigned files. Unflagged items have not necessarily been fact-checked; structural validation does not establish content identity.",
+      "Lists model questions, changes to manual information, relationship name changes and unassigned files in this review. Deferred works are listed separately and remain pending for the next increment. Unflagged items have not necessarily been fact-checked; structural validation does not establish content identity.",
     organizationFeedbackLabel: "Your decisions or changes",
     organizationFeedbackPlaceholder:
       "Describe what to keep, correct or investigate.",
@@ -38,7 +80,18 @@ export const organizationMessages = {
     organizationManualChanged: "Changes manual edits",
     organizationApply: "Apply organization",
     organizationApplyBody:
-      "The selected works will be regrouped in your library. Playback progress is preserved. Source files will not be moved, renamed or deleted. Unselected suggestions stay unchanged.",
+      "Apply the selected organization plan and keep playback progress. Unselected works stay unchanged.",
+    organizationApplySourceFiles:
+      "Source files will not be moved, renamed or deleted.",
+    organizationApplyDeferred:
+      "Skip {count} deferred works for now. Keep their current library records for the next incremental review.",
+    organizationApplyFileExclusions:
+      "Remove {count} selected supplementary files from the library. Future regular scans will also skip them; the source files are preserved.",
+    organizationApplyMissingFiles:
+      "Remove {count} selected missing-file records from the library. Unselected records stay unchanged.",
+    organizationApplyRelationshipRemovals: "Remove these series / collections:",
+    organizationApplyRelationshipRetention:
+      "Only these groups will be removed. Their works and source files are preserved.",
     organizationApplied: "Organized {count} works",
     organizationScanning: "Reading folders",
     organizationGrouping: "Analyzing library structure",
@@ -68,13 +121,54 @@ export const organizationMessages = {
       "Optional. Helps verify ambiguous titles and relationships; organizing filenames does not require web search.",
   },
   zh: {
+    organizationFileExclusions: "将附加素材移出片库",
+    organizationExcludeFile: "移出片库 · {name}",
+    organizationFileExclusionHelp:
+      "应用时将勾选的附加素材移出片库索引，普通重扫也会跳过；保留源文件，不留下只含这些素材的重复作品。",
+    organizationRelationshipRemovals: "移除系列／合集",
+    organizationRemoveRelationship: "移除关系 · {name}",
+    organizationRelationshipRemovalHelp:
+      "仅在应用时移除勾选的系列或合集记录，保留其中作品及源文件。",
+    organizationDeferred: "暂缓处理",
+    organizationDeferredFeedback:
+      "这些关联作品不包含在本轮应用中，留待后续增量处理。仍可查看并修订当前快照的方案，受影响部分继续暂缓。",
+    organizationRelationshipRename: "名称调整：{before} → {after}",
+    organizationDeferredSummary:
+      "有 {count} 个关联建议因删除或修改而暂缓，其余独立建议仍可应用。",
+    organizationAllDeferred:
+      "全部建议都受到删除、修改或范围变化的影响。草稿已保留，请重新生成后再应用。",
+    organizationDeferredHelp:
+      "暂缓建议仍保留在此处，不删除、不算已确认，也不包含在本轮应用中。相关文件、上次方案和变化依据会进入下一轮增量审阅。",
+    organizationMode: "整理方式",
+    organizationIncremental: "增量审阅",
+    organizationFull: "重新全量检查",
+    organizationChanges: "变更",
+    organizationAdded: "新增／尚未确认",
+    organizationModified: "修改",
+    organizationRemoved: "移除",
+    organizationAcknowledgeRemoval: "确认移除片库记录",
+    organizationRemovalHelp:
+      "仅勾选你认可的移除项。应用时清理这些已缺失文件的片库记录，不删除源文件；未勾选项下次继续待处理。",
+    organizationBaselineHelp:
+      "只有已应用的决定才算确认。未应用草稿和未确认项继续待处理；首次整理没有旧基准。",
+    organizationDeltaSummary:
+      "本轮审阅 {pending} 个文件 · 沿用 {unchanged} 个未变化文件",
+    organizationLiveAdded:
+      "快照之后又新增了 {count} 个文件，留待下次增量处理；当前方案仍可应用。",
+    organizationLiveBlocked:
+      "整理范围内的文件或组织信息在快照后发生了删除或修改。草稿已保留，请重新生成后再应用。",
+    organizationNoChanges: "没有待处理变更，已应用的决定继续沿用。",
     smartOrganize: "智能整理",
     organizationFeedback: "确认与补充意见",
     organizationNoSeries: "暂无系列建议",
     organizationUnselectedMembers: "请先在作品页审阅并勾选以下成员：{names}",
+    organizationMembersDeferred: "成员暂缓",
+    organizationMembersUnselected: "成员未勾选",
+    organizationDeferredMembers:
+      "以下作品留待下次增量处理，此关系也随之暂缓：{names}",
     organizationFlaggedCount: "已标记待确认 · {count}",
     organizationReviewMeaning:
-      "列出全部 AI 标记的疑点、关系改名和未归组文件。未标记不代表已经完成事实核验；结构校验通过也不代表内容归属一定正确。",
+      "列出本轮模型疑点、手动信息变更、关系改名和未归组文件。暂缓作品单独列出，留待下次增量处理。未标记不代表已经完成事实核验；结构校验通过也不代表内容归属一定正确。",
     organizationFeedbackLabel: "你的判断或调整意见",
     organizationFeedbackPlaceholder: "说明哪些需要保留、调整或进一步核实。",
     organizationNoQuestions: "当前没有待确认项。你仍可对当前方案提出调整意见。",
@@ -102,7 +196,17 @@ export const organizationMessages = {
     organizationManualChanged: "涉及手动修改",
     organizationApply: "应用整理",
     organizationApplyBody:
-      "将按选中的方案更新片库分组，保留播放进度。源文件不会移动、重命名或删除；未选中的建议保持原状。",
+      "将按已勾选的方案整理片库，并保留播放进度。未勾选的作品保持原状。",
+    organizationApplySourceFiles: "源文件不会移动、重命名或删除。",
+    organizationApplyDeferred:
+      "本轮跳过 {count} 部暂缓作品，保留其当前片库记录，留待下次增量整理。",
+    organizationApplyFileExclusions:
+      "将勾选的 {count} 个附加素材从片库移除，后续普通扫描也会跳过；源文件保留。",
+    organizationApplyMissingFiles:
+      "将勾选的 {count} 个已缺失文件记录从片库移除。未勾选的记录保持不变。",
+    organizationApplyRelationshipRemovals: "将移除以下系列／合集：",
+    organizationApplyRelationshipRetention:
+      "只移除这些分组，其中的作品和源文件都会保留。",
     organizationApplied: "已整理 {count} 个作品",
     organizationScanning: "读取目录",
     organizationGrouping: "整体分析片库结构",
@@ -116,7 +220,8 @@ export const organizationMessages = {
     organizationEmpty: "所选目录中没有可整理的视频。",
     organizationInvalid:
       "AI 返回的归组不完整或无效，尚未应用任何改动，请重试。",
-    organizationStale: "片库在预览期间发生了变化，请重新生成方案后再应用。",
+    organizationStale:
+      "整理范围在预览期间发生了删除或修改，请重新生成方案后再应用。",
     organizationExpired: "方案已过期，请重新生成。",
     organizationNoCollections: "暂无合集建议",
     organizationNoUnassigned: "所有文件均已有归组建议",

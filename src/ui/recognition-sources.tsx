@@ -94,6 +94,7 @@ export function RecognitionSources({
         <div className="settings-content">
           <div>
             {builtin("Bangumi", t("sourceAvailable"))}
+            {builtin("Bilibili", t("bilibiliPublicMetadata"))}
             {builtin(
               "TMDB",
               t(config.tmdbConfigured ? "configured" : "notConfigured"),

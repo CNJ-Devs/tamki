@@ -36,6 +36,11 @@ import {
   SelectItem,
 } from "./components/ui/select";
 import { Slider } from "./components/ui/slider";
+import {
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
+} from "./components/ui/popover";
 import { PlaybackTimeline } from "./playback-timeline";
 import { mediaSeekBoundary } from "../shared/seek-boundary";
 import { useI18n, errorMessage } from "./i18n";
@@ -104,8 +109,24 @@ export function Player({
   const [actualQuality, setActualQuality] = useState<number>();
   const [retry, setRetry] = useState(0);
   const [failureText, setFailureText] = useState("");
-  const resumePosition = useRef<number | null>(null);
+  const resumePosition = useRef<{ episodeId: string; position: number } | null>(
+    null,
+  );
   const loadedMedia = useRef<ReturnType<typeof mediaSelection> | null>(null);
+  const rememberPosition = () => {
+    const v = video.current;
+    if (
+      episode &&
+      v &&
+      v.readyState >= 1 &&
+      loadedMedia.current?.id === episode.id
+    )
+      resumePosition.current = {
+        episodeId: episode.id,
+        position: v.currentTime,
+      };
+    return resumePosition.current;
+  };
   const nextAutoplay = useRef(true);
   const [versionMenu, setVersionMenu] = useState(false);
   const [changingVersion, setChangingVersion] = useState(false);
@@ -164,10 +185,13 @@ export function Player({
       if (cancelled) return;
       loadedMedia.current = selection;
       setDuration(Number.isFinite(v.duration) ? v.duration : 0);
-      const position = resumePosition.current ?? episode.position;
+      const position =
+        resumePosition.current?.episodeId === episode.id
+          ? resumePosition.current.position
+          : episode.position;
       resumePosition.current = null;
-      if (position > 0 && position < v.duration - 0.02)
-        v.currentTime = position;
+      if (position > 0 && Number.isFinite(v.duration) && v.duration > 0)
+        v.currentTime = Math.min(position, Math.max(0, v.duration - 0.02));
       v.volume = volume;
       v.muted = muted;
       v.playbackRate = Number(speed);
@@ -270,7 +294,16 @@ export function Player({
     };
   }, [active, fullscreen]);
   useEffect(() => {
+    if (!active) setQueue(false);
+  }, [active]);
+  useEffect(() => {
+    const close = () => setQueue(false);
+    window.addEventListener("blur", close);
+    return () => window.removeEventListener("blur", close);
+  }, []);
+  useEffect(() => {
     const listener = () => {
+      setQueue(false);
       setFullscreen(document.fullscreenElement === root.current);
       setShown(true);
     };
@@ -384,377 +417,401 @@ export function Player({
       }
     : rect;
   return (
-    <div
-      ref={root}
-      className={cn(
-        "player",
-        fullscreen && "is-fullscreen",
-        !active && "inactive-player",
-        !shown && "controls-hidden",
-      )}
-      onPointerMove={show}
-      onFocusCapture={show}
-      onKeyDown={(e) => {
-        if (
-          (e.target as HTMLElement).closest(
-            "button,input,[role=slider],[role=combobox]",
-          )
-        )
-          return;
-        if (e.code === "Space" || e.key === "k") {
-          e.preventDefault();
-          toggle();
-        }
-        if (e.key === "ArrowLeft") {
-          e.preventDefault();
-          seek(position - 10);
-        }
-        if (e.key === "ArrowRight") {
-          e.preventDefault();
-          seek(position + 10);
+    <Popover
+      open={queue}
+      onOpenChange={(open) => {
+        setQueue(open);
+        if (open) {
+          setBrowseGroup(currentGroup?.id);
+          show();
         }
       }}
-      tabIndex={0}
     >
-      <header className="player-header" inert={fullscreen && !shown}>
-        <TextTip>
-          {episodeName(episode) === work.title
-            ? work.title
-            : `${currentGroup?.title || work.title} · ${episodeName(episode)}`}
-        </TextTip>
-      </header>
-      <div ref={stage} className="player-stage">
-        {(mini || pip) && (
-          <div className="player-placeholder">
-            <p>{t(mini ? "playingMini" : "playingPip")}</p>
-            <Button
-              variant="secondary"
-              onClick={() => (mini ? restore() : void picture())}
-            >
-              {t("returnPlayer")}
-            </Button>
-          </div>
-        )}
-        {failure && (
-          <div className="player-placeholder">
-            <p role="alert">
-              {online
-                ? failureText || t("onlinePlaybackFailed")
-                : t("playbackFailed")}
-            </p>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                resumePosition.current = video.current?.currentTime || 0;
-                setRetry((n) => n + 1);
-              }}
-            >
-              {t("retryPlayback")}
-            </Button>
-          </div>
-        )}
-      </div>
       <div
+        ref={root}
         className={cn(
-          "video-surface",
-          mini && "mini-surface",
-          pip && "pip-surface",
+          "player",
+          fullscreen && "is-fullscreen",
+          !active && "inactive-player",
+          !shown && "controls-hidden",
         )}
-        style={{
-          left: target.left,
-          top: target.top,
-          width: target.width,
-          height: target.height,
+        onPointerMove={show}
+        onFocusCapture={show}
+        onKeyDown={(e) => {
+          if (
+            (e.target as HTMLElement).closest(
+              "button,input,[role=slider],[role=combobox]",
+            )
+          )
+            return;
+          if (e.code === "Space" || e.key === "k") {
+            e.preventDefault();
+            toggle();
+          }
+          if (e.key === "ArrowLeft") {
+            e.preventDefault();
+            seek(position - 10);
+          }
+          if (e.key === "ArrowRight") {
+            e.preventDefault();
+            seek(position + 10);
+          }
         }}
+        tabIndex={0}
       >
-        <video
-          ref={video}
-          playsInline
-          onClick={toggle}
-          onDoubleClick={() => void full()}
-          onPlay={() => {
-            setPaused(false);
-            show();
-          }}
-          onPause={() => {
-            setPaused(true);
-            commit(true);
-          }}
-          onTimeUpdate={() => {
-            setPosition(video.current!.currentTime);
-            updateBoundary();
-            commit();
-          }}
-          onSeeked={() => {
-            updateBoundary();
-            commit(true);
-          }}
-          onError={() => {
-            if (video.current?.getAttribute("src")) {
-              setFailure(true);
-              setFailureText(t("onlinePlaybackFailed"));
-              if (online)
-                void window.tamki
-                  .library("online-player-error", {
-                    episodeId: episode.id,
-                    stage: "video",
-                    code: String(video.current.error?.code || "unknown"),
-                  })
-                  .catch(() => {});
-            }
-          }}
-          onEnded={() => {
-            commit(true);
-            if (currentIndex < currentEpisodes.length - 1)
-              choose(currentEpisodes[currentIndex + 1].id);
-            else setPaused(true);
-          }}
-        />
-        {mini && (
-          <>
-            <div className="mini-heading">
-              <TextTip>{work.title}</TextTip>
-              <IconButton label={t("returnPlayer")} onClick={restore}>
-                <ArrowsOutSimpleIcon />
-              </IconButton>
-              <IconButton
-                label={t("close")}
+        <header className="player-header" inert={fullscreen && !shown}>
+          <TextTip>
+            {episodeName(episode) === work.title
+              ? work.title
+              : `${currentGroup?.title || work.title} · ${episodeName(episode)}`}
+          </TextTip>
+        </header>
+        <div ref={stage} className="player-stage">
+          {(mini || pip) && (
+            <div className="player-placeholder">
+              <p>{t(mini ? "playingMini" : "playingPip")}</p>
+              <Button
+                variant="secondary"
+                onClick={() => (mini ? restore() : void picture())}
+              >
+                {t("returnPlayer")}
+              </Button>
+            </div>
+          )}
+          {failure && (
+            <div className="player-placeholder">
+              <p role="alert">
+                {online
+                  ? failureText || t("onlinePlaybackFailed")
+                  : t("playbackFailed")}
+              </p>
+              <Button
+                variant="secondary"
                 onClick={() => {
-                  video.current?.pause();
-                  setMini(false);
+                  rememberPosition();
+                  setRetry((n) => n + 1);
                 }}
               >
-                <XIcon />
-              </IconButton>
+                {t("retryPlayback")}
+              </Button>
             </div>
-            <div className="mini-controls">
-              <IconButton label={t(paused ? "play" : "pause")} onClick={toggle}>
+          )}
+        </div>
+        <div
+          className={cn(
+            "video-surface",
+            mini && "mini-surface",
+            pip && "pip-surface",
+          )}
+          style={{
+            left: target.left,
+            top: target.top,
+            width: target.width,
+            height: target.height,
+          }}
+        >
+          <video
+            ref={video}
+            playsInline
+            onClick={toggle}
+            onDoubleClick={() => void full()}
+            onPlay={() => {
+              setPaused(false);
+              show();
+            }}
+            onPause={() => {
+              setPaused(true);
+              commit(true);
+            }}
+            onTimeUpdate={() => {
+              setPosition(video.current!.currentTime);
+              updateBoundary();
+              commit();
+            }}
+            onSeeked={() => {
+              updateBoundary();
+              commit(true);
+            }}
+            onError={() => {
+              if (video.current?.getAttribute("src")) {
+                setFailure(true);
+                setFailureText(t("onlinePlaybackFailed"));
+                if (online)
+                  void window.tamki
+                    .library("online-player-error", {
+                      episodeId: episode.id,
+                      stage: "video",
+                      code: String(video.current.error?.code || "unknown"),
+                    })
+                    .catch(() => {});
+              }
+            }}
+            onEnded={() => {
+              commit(true);
+              if (currentIndex < currentEpisodes.length - 1)
+                choose(currentEpisodes[currentIndex + 1].id);
+              else setPaused(true);
+            }}
+          />
+          {mini && (
+            <>
+              <div className="mini-heading">
+                <TextTip>{work.title}</TextTip>
+                <IconButton label={t("returnPlayer")} onClick={restore}>
+                  <ArrowsOutSimpleIcon />
+                </IconButton>
+                <IconButton
+                  label={t("close")}
+                  onClick={() => {
+                    video.current?.pause();
+                    setMini(false);
+                  }}
+                >
+                  <XIcon />
+                </IconButton>
+              </div>
+              <div className="mini-controls">
+                <IconButton
+                  label={t(paused ? "play" : "pause")}
+                  onClick={toggle}
+                >
+                  {paused ? <PlayIcon /> : <PauseIcon />}
+                </IconButton>
+                <span>
+                  {clock(position)} / {clock(duration)}
+                </span>
+                <IconButton
+                  label={t("pip")}
+                  onClick={() => void picture()}
+                  disabled={switching}
+                >
+                  <ArrowSquareOutIcon />
+                </IconButton>
+              </div>
+            </>
+          )}
+        </div>
+        <footer className="player-controls" inert={fullscreen && !shown}>
+          <PlaybackTimeline
+            media={video}
+            duration={duration}
+            enabled={active}
+            disabled={!duration || failure}
+            onSeek={seek}
+            onPreview={setPreview}
+            onMediaSample={updateBoundary}
+          />
+          <div className="player-toolbar">
+            <div className="player-transport">
+              <IconButton
+                label={t(paused ? "play" : "pause")}
+                onClick={toggle}
+                disabled={failure}
+              >
                 {paused ? <PlayIcon /> : <PauseIcon />}
               </IconButton>
-              <span>
-                {clock(position)} / {clock(duration)}
-              </span>
+              <IconButton
+                label={t("previousEpisode")}
+                disabled={currentIndex <= 0}
+                onClick={() => choose(currentEpisodes[currentIndex - 1].id)}
+              >
+                <SkipBackIcon />
+              </IconButton>
+              <IconButton
+                label={t("nextEpisode")}
+                disabled={currentIndex >= currentEpisodes.length - 1}
+                onClick={() => choose(currentEpisodes[currentIndex + 1].id)}
+              >
+                <SkipForwardIcon />
+              </IconButton>
+              <IconButton
+                label={t("rewind")}
+                disabled={failure || boundary.atStart}
+                onClick={() => seek(position - 10)}
+              >
+                <RewindIcon />
+              </IconButton>
+              <IconButton
+                label={t("fastForward")}
+                disabled={failure || boundary.atEnd}
+                onClick={() => seek(position + 10)}
+              >
+                <FastForwardIcon />
+              </IconButton>
+            </div>
+            <span className="player-time">
+              {clock(preview ?? position)} <span>/ {clock(duration)}</span>
+            </span>
+            <div className="player-options">
+              <div className="player-volume">
+                <IconButton
+                  label={t(muted ? "unmute" : "mute")}
+                  onClick={() => {
+                    const next = !muted;
+                    setMuted(next);
+                    video.current!.muted = next;
+                  }}
+                >
+                  {muted || !volume ? (
+                    <SpeakerSlashIcon />
+                  ) : (
+                    <SpeakerHighIcon />
+                  )}
+                </IconButton>
+                <Slider
+                  value={[muted ? 0 : volume]}
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  thumbLabel={t("volume")}
+                  onValueChange={([v]) => {
+                    setVolume(v);
+                    setMuted(false);
+                    video.current!.volume = v;
+                    video.current!.muted = false;
+                  }}
+                />
+              </div>
+              {online && qualities.length > 0 && (
+                <Select
+                  value={String(quality || actualQuality || qualities[0].id)}
+                  onOpenChange={setVersionMenu}
+                  onValueChange={(value) => {
+                    rememberPosition();
+                    nextAutoplay.current = !video.current?.paused;
+                    setQuality(Number(value));
+                  }}
+                >
+                  <SelectTrigger
+                    aria-label={t("playbackQuality")}
+                    className="player-version-select"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent
+                    container={
+                      fullscreen ? root.current || undefined : undefined
+                    }
+                  >
+                    <SelectGroup>
+                      {qualities.map((q) => (
+                        <SelectItem key={q.id} value={String(q.id)}>
+                          {q.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              )}
+              {(episode.versions?.length || 0) > 1 && (
+                <Select
+                  value={episode.activeVersionId}
+                  disabled={changingVersion}
+                  onOpenChange={setVersionMenu}
+                  onValueChange={(versionId) => {
+                    const resume = rememberPosition();
+                    commit(true);
+                    nextAutoplay.current = !video.current?.paused;
+                    setChangingVersion(true);
+                    void window.tamki
+                      .library("select-version", { id: episode.id, versionId })
+                      .catch((e) => {
+                        if (resumePosition.current === resume)
+                          resumePosition.current = null;
+                        toast.error(errorMessage(e, t));
+                      })
+                      .finally(() => setChangingVersion(false));
+                  }}
+                >
+                  <SelectTrigger
+                    aria-label={t("playbackVersion")}
+                    className="player-version-select"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent
+                    container={
+                      fullscreen ? root.current || undefined : undefined
+                    }
+                  >
+                    <SelectGroup>
+                      {episode.versions!.map((v, i) => (
+                        <SelectItem
+                          key={v.id}
+                          value={v.id}
+                          disabled={v.files.every((f) => f.missing)}
+                        >
+                          {v.label ||
+                            t("versionNumber").replace("{n}", String(i + 1))}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              )}
+              <Select
+                value={speed}
+                onValueChange={(v) => {
+                  setSpeed(v);
+                  video.current!.playbackRate = Number(v);
+                }}
+              >
+                <SelectTrigger aria-label={t("speed")}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent
+                  container={fullscreen ? root.current || undefined : undefined}
+                >
+                  <SelectGroup>
+                    {[0.5, 0.75, 1, 1.25, 1.5, 2].map((v) => (
+                      <SelectItem key={v} value={String(v)}>
+                        {v}×
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <PopoverTrigger asChild>
+                <IconButton label={t("queue")}>
+                  <ListBulletsIcon />
+                </IconButton>
+              </PopoverTrigger>
+              <IconButton
+                label={t("mini")}
+                disabled={switching || failure}
+                onClick={() => void small()}
+              >
+                <PictureInPictureIcon />
+              </IconButton>
               <IconButton
                 label={t("pip")}
+                disabled={
+                  switching || failure || !document.pictureInPictureEnabled
+                }
                 onClick={() => void picture()}
-                disabled={switching}
               >
                 <ArrowSquareOutIcon />
               </IconButton>
-            </div>
-          </>
-        )}
-      </div>
-      <footer className="player-controls" inert={fullscreen && !shown}>
-        <PlaybackTimeline
-          media={video}
-          duration={duration}
-          enabled={active}
-          disabled={!duration || failure}
-          onSeek={seek}
-          onPreview={setPreview}
-          onMediaSample={updateBoundary}
-        />
-        <div className="player-toolbar">
-          <div className="player-transport">
-            <IconButton
-              label={t(paused ? "play" : "pause")}
-              onClick={toggle}
-              disabled={failure}
-            >
-              {paused ? <PlayIcon /> : <PauseIcon />}
-            </IconButton>
-            <IconButton
-              label={t("previousEpisode")}
-              disabled={currentIndex <= 0}
-              onClick={() => choose(currentEpisodes[currentIndex - 1].id)}
-            >
-              <SkipBackIcon />
-            </IconButton>
-            <IconButton
-              label={t("nextEpisode")}
-              disabled={currentIndex >= currentEpisodes.length - 1}
-              onClick={() => choose(currentEpisodes[currentIndex + 1].id)}
-            >
-              <SkipForwardIcon />
-            </IconButton>
-            <IconButton
-              label={t("rewind")}
-              disabled={failure || boundary.atStart}
-              onClick={() => seek(position - 10)}
-            >
-              <RewindIcon />
-            </IconButton>
-            <IconButton
-              label={t("fastForward")}
-              disabled={failure || boundary.atEnd}
-              onClick={() => seek(position + 10)}
-            >
-              <FastForwardIcon />
-            </IconButton>
-          </div>
-          <span className="player-time">
-            {clock(preview ?? position)} <span>/ {clock(duration)}</span>
-          </span>
-          <div className="player-options">
-            <div className="player-volume">
               <IconButton
-                label={t(muted ? "unmute" : "mute")}
-                onClick={() => {
-                  const next = !muted;
-                  setMuted(next);
-                  video.current!.muted = next;
-                }}
+                label={t(fullscreen ? "exitFullscreen" : "fullscreen")}
+                onClick={() => void full()}
               >
-                {muted || !volume ? <SpeakerSlashIcon /> : <SpeakerHighIcon />}
+                {fullscreen ? <CornersInIcon /> : <CornersOutIcon />}
               </IconButton>
-              <Slider
-                value={[muted ? 0 : volume]}
-                min={0}
-                max={1}
-                step={0.01}
-                thumbLabel={t("volume")}
-                onValueChange={([v]) => {
-                  setVolume(v);
-                  setMuted(false);
-                  video.current!.volume = v;
-                  video.current!.muted = false;
-                }}
-              />
             </div>
-            {online && qualities.length > 0 && (
-              <Select
-                value={String(quality || actualQuality || qualities[0].id)}
-                onOpenChange={setVersionMenu}
-                onValueChange={(value) => {
-                  resumePosition.current = video.current?.currentTime || 0;
-                  nextAutoplay.current = !video.current?.paused;
-                  setQuality(Number(value));
-                }}
-              >
-                <SelectTrigger
-                  aria-label={t("playbackQuality")}
-                  className="player-version-select"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent
-                  container={fullscreen ? root.current || undefined : undefined}
-                >
-                  <SelectGroup>
-                    {qualities.map((q) => (
-                      <SelectItem key={q.id} value={String(q.id)}>
-                        {q.label}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            )}
-            {(episode.versions?.length || 0) > 1 && (
-              <Select
-                value={episode.activeVersionId}
-                disabled={changingVersion}
-                onOpenChange={setVersionMenu}
-                onValueChange={(versionId) => {
-                  commit(true);
-                  nextAutoplay.current = !video.current?.paused;
-                  setChangingVersion(true);
-                  void window.tamki
-                    .library("select-version", { id: episode.id, versionId })
-                    .catch((e) => toast.error(errorMessage(e, t)))
-                    .finally(() => setChangingVersion(false));
-                }}
-              >
-                <SelectTrigger
-                  aria-label={t("playbackVersion")}
-                  className="player-version-select"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent
-                  container={fullscreen ? root.current || undefined : undefined}
-                >
-                  <SelectGroup>
-                    {episode.versions!.map((v, i) => (
-                      <SelectItem
-                        key={v.id}
-                        value={v.id}
-                        disabled={v.files.every((f) => f.missing)}
-                      >
-                        {v.label ||
-                          t("versionNumber").replace("{n}", String(i + 1))}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            )}
-            <Select
-              value={speed}
-              onValueChange={(v) => {
-                setSpeed(v);
-                video.current!.playbackRate = Number(v);
-              }}
-            >
-              <SelectTrigger aria-label={t("speed")}>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent
-                container={fullscreen ? root.current || undefined : undefined}
-              >
-                <SelectGroup>
-                  {[0.5, 0.75, 1, 1.25, 1.5, 2].map((v) => (
-                    <SelectItem key={v} value={String(v)}>
-                      {v}×
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            <IconButton
-              label={t("queue")}
-              aria-expanded={queue}
-              onClick={() => {
-                setBrowseGroup(currentGroup?.id);
-                setQueue(!queue);
-                show();
-              }}
-            >
-              <ListBulletsIcon />
-            </IconButton>
-            <IconButton
-              label={t("mini")}
-              disabled={switching || failure}
-              onClick={() => void small()}
-            >
-              <PictureInPictureIcon />
-            </IconButton>
-            <IconButton
-              label={t("pip")}
-              disabled={
-                switching || failure || !document.pictureInPictureEnabled
-              }
-              onClick={() => void picture()}
-            >
-              <ArrowSquareOutIcon />
-            </IconButton>
-            <IconButton
-              label={t(fullscreen ? "exitFullscreen" : "fullscreen")}
-              onClick={() => void full()}
-            >
-              {fullscreen ? <CornersInIcon /> : <CornersOutIcon />}
-            </IconButton>
           </div>
-        </div>
-      </footer>
-      {queue && (
-        <div className="player-queue">
+        </footer>
+        <PopoverContent
+          className="player-queue"
+          aria-label={t("queue")}
+          side="top"
+          align="end"
+          sideOffset={8}
+          collisionPadding={8}
+          portalContainer={fullscreen ? root.current || undefined : undefined}
+        >
           <header>
             <h3>{t("queue")}</h3>
-            <IconButton label={t("close")} onClick={() => setQueue(false)}>
-              <XIcon />
-            </IconButton>
           </header>
           {(groups.length > 1 || relatedWorks.length > 1) && (
             <HorizontalScroll
@@ -807,8 +864,8 @@ export function Player({
               </Button>
             ))}
           </Fade>
-        </div>
-      )}
-    </div>
+        </PopoverContent>
+      </div>
+    </Popover>
   );
 }

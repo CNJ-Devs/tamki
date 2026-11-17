@@ -393,7 +393,7 @@ export class ClaudeCode {
         ...(tools.length ? ["--allowedTools", tools.join(",")] : []),
         "--append-system-prompt",
         task.system +
-          (searching
+          (searching && task.searchPolicy !== "optional"
             ? " Use WebSearch to verify facts before returning metadata."
             : ""),
         "--json-schema",
@@ -453,7 +453,11 @@ export class ClaudeCode {
           : "recognitionFailed",
       );
     signal.throwIfAborted();
-    if (searching && (!completed.size || !citations.length))
+    if (
+      searching &&
+      task.searchPolicy !== "optional" &&
+      (!completed.size || !citations.length)
+    )
       throw new ProviderError("oauthSearchUnverified");
     const text = result.structured_output
       ? JSON.stringify(result.structured_output)
@@ -476,6 +480,7 @@ export class ClaudeCode {
         schema: z.toJSONSchema(recognitionOutputSchema),
         name: "tamki_metadata",
         queries: [],
+        searchPolicy: input.missing ? "optional" : undefined,
       },
       signal,
     );

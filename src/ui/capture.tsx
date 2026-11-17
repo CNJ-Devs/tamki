@@ -43,6 +43,8 @@ import {
 import { ButtonGroup } from "./components/ui/button-group";
 import { Input } from "./components/ui/input";
 import { FieldGroup } from "./components/ui/field";
+import { DownloadSelection, DownloadSection } from "./download-selection";
+import { cn } from "./lib/utils";
 
 const action = <T,>(type: string, value?: unknown) =>
   window.tamkiCapture.action<T>(type, value);
@@ -409,6 +411,48 @@ export function DownloadForm({ state }: { state: CaptureViewState }) {
   const t = useI18n(),
     draft = state.draft!;
   const [qualities, setQualities] = useState<number[]>([0]);
+  const [selected, setSelected] = useState(
+    () => new Set(draft.choices?.flatMap((choice) => choice.resourceIds) || []),
+  );
+  const [qualityOverrides, setQualityOverrides] = useState<
+    Record<string, number[]>
+  >({});
+  const selectionKey = [...selected].join("|");
+  useEffect(() => {
+    if (!draft.choices || (!draft.qualities && !draft.qualityError)) return;
+    const timer = setTimeout(() => {
+      void action("check-qualities", {
+        draftId: draft.id,
+        resourceIds: [...selected],
+      }).catch(() => {});
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [draft.id, !!draft.qualities, !!draft.qualityError, selectionKey]);
+  const missing = [...selected].filter((id) => {
+    const info = draft.itemQualities?.[id]?.qualities;
+    const wanted = id in qualityOverrides ? qualityOverrides[id] : qualities;
+    return (
+      info &&
+      wanted.some((q) => q !== 0 && !info.some((entry) => entry.id === q))
+    );
+  });
+  const count = draft.choices ? selected.size : draft.count;
+  const downloadCount = draft.choices
+    ? [...selected].reduce(
+        (n, id) =>
+          n +
+          (id in qualityOverrides
+            ? qualityOverrides[id].length
+            : qualities.length),
+        0,
+      )
+    : count * qualities.length;
+  const pendingQuality =
+    !!draft.choices &&
+    [...selected].some((id) => {
+      const desired = id in qualityOverrides ? qualityOverrides[id] : qualities;
+      return desired.some((q) => q !== 0) && !draft.itemQualities?.[id];
+    });
   const [name, setName] = useState(draft.name),
     [target, setTarget] = useState<SaveTarget | null>(draft.target),
     [picking, setPicking] = useState(false),
@@ -462,7 +506,7 @@ export function DownloadForm({ state }: { state: CaptureViewState }) {
       setNameError(t("downloadNameInvalid"));
       return;
     }
-    if (!target) return;
+    if (!target || !count || missing.length || pendingQuality) return;
     setBusy(true);
     try {
       await action("submit", {
@@ -470,6 +514,10 @@ export function DownloadForm({ state }: { state: CaptureViewState }) {
         name: name.trim(),
         target,
         qualities,
+        ...(draft.choices ? { resourceIds: [...selected] } : {}),
+        qualityOverrides: Object.entries(qualityOverrides)
+          .filter(([id]) => selected.has(id))
+          .map(([resourceId, qualities]) => ({ resourceId, qualities })),
       });
     } catch (e) {
       setError(errorMessage(e, t));
@@ -515,7 +563,10 @@ export function DownloadForm({ state }: { state: CaptureViewState }) {
             : "downloadVideo",
       )}
       onClose={close}
-      className="download-modal"
+      className={cn(
+        "download-modal",
+        draft.choices && "download-modal-selection",
+      )}
       footer={
         <>
           {picking ? (
@@ -547,7 +598,12 @@ export function DownloadForm({ state }: { state: CaptureViewState }) {
               </Button>
               <Button
                 disabled={
-                  busy || !connection || connection.status === "offline"
+                  busy ||
+                  !count ||
+                  !!missing.length ||
+                  pendingQuality ||
+                  !connection ||
+                  connection.status === "offline"
                 }
                 onClick={() => void submit()}
               >
@@ -556,7 +612,7 @@ export function DownloadForm({ state }: { state: CaptureViewState }) {
                   : draft.series
                     ? t("captureDownloadCount").replace(
                         "{n}",
-                        String(draft.count * qualities.length),
+                        String(downloadCount),
                       )
                     : t("download")}
               </Button>
@@ -567,21 +623,6 @@ export function DownloadForm({ state }: { state: CaptureViewState }) {
     >
       <Fade className="modal-body">
         <FieldGroup>
-          {!picking && draft.hierarchy && (
-            <div className="capture-download-hierarchy">
-              <span className="capture-section-label">
-                {t("captureSaveByWork")}
-              </span>
-              {draft.hierarchy.map((group, i) => (
-                <div key={i}>
-                  <TextTip>{group.title}</TextTip>
-                  <small>
-                    {t("captureEpisodes").replace("{n}", String(group.count))}
-                  </small>
-                </div>
-              ))}
-            </div>
-          )}
           {picking ? (
             <FormField label={connection!.name} error={error}>
               <div className="directory-toolbar">
@@ -684,7 +725,7 @@ export function DownloadForm({ state }: { state: CaptureViewState }) {
                         : "captureName",
                   ) +
                   (draft.series
-                    ? ` · ${t("captureEpisodes").replace("{n}", String(draft.count))}`
+                    ? ` · ${t("captureEpisodes").replace("{n}", String(count))}`
                     : "")
                 }
                 error={nameError}
@@ -700,46 +741,6 @@ export function DownloadForm({ state }: { state: CaptureViewState }) {
                   }}
                   aria-invalid={!!nameError}
                 />
-              </FormField>
-              <FormField label={t("downloadQuality")}>
-                {!draft.qualities && !draft.qualityError && (
-                  <span role="status">{t("loading")}</span>
-                )}
-                <div className="flex flex-wrap gap-2">
-                  {[
-                    { id: 0, label: t("downloadQualityAuto") },
-                    ...(draft.qualities || []),
-                  ].map((quality) => (
-                    <Button
-                      key={quality.id}
-                      variant={
-                        qualities.includes(quality.id) ? "secondary" : "ghost"
-                      }
-                      size="sm"
-                      aria-pressed={qualities.includes(quality.id)}
-                      disabled={busy}
-                      onClick={() =>
-                        setQualities((old) =>
-                          quality.id === 0
-                            ? [0]
-                            : old.includes(quality.id)
-                              ? old.length === 1
-                                ? [0]
-                                : old.filter((id) => id !== quality.id)
-                              : [...old.filter((id) => id !== 0), quality.id],
-                        )
-                      }
-                    >
-                      {quality.label}
-                    </Button>
-                  ))}
-                </div>
-                <span className="muted">{t("downloadQualityHelp")}</span>
-                {draft.qualityError && (
-                  <span role="status">
-                    {errorMessage(new Error(draft.qualityError), t)}
-                  </span>
-                )}
               </FormField>
               <FormField label={t("saveDestination")} error={error}>
                 <ButtonGroup className="save-target-control">
@@ -775,6 +776,88 @@ export function DownloadForm({ state }: { state: CaptureViewState }) {
                   </Button>
                 </ButtonGroup>
               </FormField>
+              <DownloadSection
+                title={t(
+                  draft.choices ? "downloadGlobalQuality" : "downloadQuality",
+                )}
+                summary={qualities
+                  .map((id) =>
+                    id === 0
+                      ? t("downloadQualityAuto")
+                      : draft.qualities?.find((q) => q.id === id)?.label ||
+                        String(id),
+                  )
+                  .join(" · ")}
+                disabled={busy}
+              >
+                {!draft.qualities && !draft.qualityError && (
+                  <span role="status">{t("loading")}</span>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { id: 0, label: t("downloadQualityAuto") },
+                    ...(draft.qualities || []),
+                  ].map((quality) => (
+                    <Button
+                      key={quality.id}
+                      variant={
+                        qualities.includes(quality.id) ? "secondary" : "ghost"
+                      }
+                      size="sm"
+                      aria-pressed={qualities.includes(quality.id)}
+                      disabled={busy}
+                      onClick={() =>
+                        setQualities((old) =>
+                          quality.id === 0
+                            ? [0]
+                            : old.includes(quality.id)
+                              ? old.length === 1
+                                ? [0]
+                                : old.filter((id) => id !== quality.id)
+                              : [...old.filter((id) => id !== 0), quality.id],
+                        )
+                      }
+                    >
+                      {quality.label}
+                    </Button>
+                  ))}
+                </div>
+                <span className="muted">{t("downloadQualityHelp")}</span>
+                {draft.qualityError && !draft.choices && (
+                  <span role="status">
+                    {errorMessage(new Error(draft.qualityError), t)}
+                  </span>
+                )}
+              </DownloadSection>
+              {draft.choices && (
+                <DownloadSelection
+                  choices={draft.choices}
+                  selected={selected}
+                  onChange={setSelected}
+                  disabled={busy}
+                  byWork={!!draft.hierarchy}
+                  quality={{
+                    info: draft.itemQualities,
+                    defaults: qualities,
+                    overrides: qualityOverrides,
+                    setOverride: (id, quality) =>
+                      setQualityOverrides((old) => {
+                        const next = { ...old };
+                        if (quality === undefined) delete next[id];
+                        else next[id] = quality;
+                        return next;
+                      }),
+                    check: (id) => {
+                      void action("check-qualities", {
+                        draftId: draft.id,
+                        resourceIds: [id],
+                        append: true,
+                        retry: true,
+                      }).catch(() => {});
+                    },
+                  }}
+                />
+              )}
             </>
           )}
         </FieldGroup>

@@ -1,3 +1,4 @@
+import path from "node:path";
 import { traced, logEvent } from "../diagnostics";
 import { ProviderError } from "../providers/provider";
 import type { Connection } from "../shared/model";
@@ -6,6 +7,9 @@ import {
   organizationApplySchema,
   organizationRefineSchema,
   organizationFileLimit,
+  organizationReviewSelectionSchema,
+  type OrganizationLiveChanges,
+  type OrganizationContext,
   type OrganizationDirectory,
   type OrganizeRequest,
   type OrganizationFile,
@@ -13,6 +17,13 @@ import {
   type OrganizationProgress,
 } from "../shared/organization";
 import { OrganizationInput } from "./organization-input";
+import type { OrganizationSnapshot } from "./organization-state";
+import {
+  organizationDelta,
+  organizationScopeKey,
+  reviewedOrganizationFiles,
+  type OrganizationCheckpoint,
+} from "./organization-review";
 import { analyzeOrganization } from "./organization-analysis";
 import { compactOrganizationTask } from "./organization-compact-input";
 import {
@@ -27,9 +38,8 @@ import type { SettingsService } from "./settings";
 import type { StorageProvider } from "../providers/provider";
 import { id } from "../shared/validation";
 
-// A whole-library response can outlast a generic recognition request. This is
-// a finite per-request limit; the job's explicit cancellation remains immediate.
-const organizationRequestTimeoutMs = 10 * 60 * 1000;
+// Organization can outlast ordinary metadata lookups. Keep the caller's
+// cancellation signal without imposing a fixed total-duration cutoff.
 
 export class OrganizationService {
   private job?: {
@@ -39,7 +49,9 @@ export class OrganizationService {
   };
   private preview?: {
     plan: OrganizationPlan;
-    baseline: string;
+    baseline: OrganizationSnapshot;
+    inventory: OrganizationFile[];
+    directories: OrganizationDirectory[];
     expires: number;
     data: OrganizationInput;
     request: OrganizeRequest;
@@ -52,6 +64,119 @@ export class OrganizationService {
     private provider: (connection: Connection) => Promise<StorageProvider>,
     private release: () => void = () => {},
   ) {}
+  private liveChanges(
+    plan: OrganizationPlan,
+    baseline: OrganizationSnapshot,
+  ): OrganizationLiveChanges {
+    return this.store.organizationLiveChanges(plan, baseline);
+  }
+
+  private savePreview(applied = false, appliedGroupIds: string[] = []) {
+    const p = this.preview;
+    if (!p) return;
+    const saved = JSON.stringify({
+      version: 2,
+      createdAt: Date.now(),
+      applied,
+      appliedGroupIds,
+      plan: p.plan,
+      baseline: p.baseline,
+      inventory: p.inventory,
+      directories: p.directories,
+      context: p.data.current,
+      request: p.request,
+      feedback: p.feedback,
+    });
+    this.store.setConfig("organization-last-review", saved);
+    this.store.setConfig(
+      "organization-draft-" + organizationScopeKey(p.plan.scopes || []),
+      saved,
+    );
+  }
+  private keepPreview(value: NonNullable<OrganizationService["preview"]>) {
+    this.preview = value;
+    value.plan.liveChanges = this.liveChanges(value.plan, value.baseline);
+    clearTimeout(this.expiry);
+    this.expiry = setTimeout(
+      () => {
+        this.preview = undefined;
+        this.release();
+      },
+      30 * 60 * 1000,
+    );
+    this.expiry.unref?.();
+    this.savePreview();
+    return value.plan;
+  }
+  resume(): OrganizationPlan | null {
+    if (this.preview) {
+      this.preview.plan.liveChanges = this.liveChanges(
+        this.preview.plan,
+        this.preview.baseline,
+      );
+      return this.preview.plan;
+    }
+    if (this.job) return null;
+    try {
+      const saved = JSON.parse(
+        this.store.config("organization-last-review") || "null",
+      );
+      if (!saved || saved.version !== 2 || saved.applied) return null;
+      const data = new OrganizationInput(
+        saved.plan.files,
+        saved.directories,
+        saved.context,
+        saved.plan.scopes || [],
+        saved.plan.delta?.mode === "incremental",
+      );
+      return this.keepPreview({
+        plan: saved.plan,
+        baseline: saved.baseline,
+        inventory: saved.inventory,
+        directories: saved.directories,
+        data,
+        request: saved.request,
+        feedback: saved.feedback || [],
+        expires: Date.now() + 30 * 60 * 1000,
+      });
+    } catch {
+      return null;
+    }
+  }
+  saveSelection(value: unknown) {
+    const input = organizationReviewSelectionSchema.parse(value),
+      p = this.preview;
+    if (!p || p.plan.jobId !== input.jobId)
+      throw new ProviderError("organizationExpired");
+    if (
+      input.fileExclusions?.some(
+        (id) => !p.plan.fileExclusions?.includes(id),
+      ) ||
+      input.relationshipRemovals?.some(
+        (id) => !p.plan.relationshipRemovals?.some((r) => r.id === id),
+      ) ||
+      input.groups.some((id) => !p.plan.groups.some((g) => g.id === id)) ||
+      input.collections.some(
+        (id) => !p.plan.collections.some((c) => c.id === id),
+      ) ||
+      input.acknowledgedRemovals?.some(
+        (id) => !p.plan.delta?.removed.some((f) => f.id === id),
+      ) ||
+      Object.keys(input.names).some(
+        (id) => !p.plan.groups.some((g) => g.id === id),
+      )
+    )
+      throw new ProviderError("invalidInput");
+    p.plan.reviewSelection = {
+      groups: input.groups,
+      collections: input.collections,
+      names: input.names,
+      acknowledgedRemovals: input.acknowledgedRemovals,
+      relationshipRemovals: input.relationshipRemovals,
+      fileExclusions: input.fileExclusions,
+    };
+    this.savePreview();
+  }
   get busy() {
     return !!this.job || !!this.preview;
   }
@@ -60,7 +185,12 @@ export class OrganizationService {
     return this.job?.id === key
       ? this.job.progress
       : this.preview?.plan.jobId === key
-        ? { phase: "ready", completed: 1, total: 1 }
+        ? {
+            phase: "ready",
+            completed: 1,
+            total: 1,
+            changes: this.liveChanges(this.preview.plan, this.preview.baseline),
+          }
         : null;
   }
   cancel(value: unknown) {
@@ -118,8 +248,7 @@ export class OrganizationService {
         paths.add(root.path);
         roots.set(root.connectionId, paths);
       }
-      const baseline = this.store.organizationFingerprint();
-      const files: OrganizationFile[] = [];
+      let files: OrganizationFile[] = [];
       const directories: OrganizationDirectory[] = [];
       const scopes: { connectionId: string; path: string; depth: number }[] =
         [];
@@ -175,13 +304,88 @@ export class OrganizationService {
         files: files.length,
         roots: input.roots.length,
       });
-      if (!files.length) throw new ProviderError("organizationEmpty");
+      const baseline = this.store.organizationSnapshot();
+      const inventory = [...files];
+      const checkpointKey =
+        "organization-reviewed-" + organizationScopeKey(scopes);
+      let checkpoint: OrganizationCheckpoint | undefined;
+      try {
+        const v = JSON.parse(this.store.config(checkpointKey) || "null");
+        if (v?.version === 1) checkpoint = v;
+      } catch {}
+      const deltaResult = organizationDelta(
+        inventory,
+        baseline,
+        checkpoint,
+        input.mode === "incremental",
+      );
+      const delta = deltaResult.delta;
+      files = deltaResult.files;
+      let previousDraft:
+        | {
+            plan?: OrganizationPlan;
+            applied?: boolean;
+            appliedGroupIds?: string[];
+          }
+        | undefined;
+      try {
+        previousDraft = JSON.parse(
+          this.store.config(
+            "organization-draft-" + organizationScopeKey(scopes),
+          ) || "null",
+        );
+      } catch {}
+      if (!inventory.length && !checkpoint)
+        throw new ProviderError("organizationEmpty");
+      const usedWorks = new Set(inventory.map((f) => f.workId));
+      const context = this.store.organizationContext(files);
+      if (delta.mode === "incremental")
+        context.works = context.works
+          .filter((w) => w.files.length || usedWorks.has(w.id))
+          .map((w) =>
+            w.files.length ? w : { ...w, description: "", tags: [] },
+          );
+      const inputDirectories =
+        delta.mode === "incremental"
+          ? directories.filter(
+              (d) =>
+                scopes.some(
+                  (s) => s.connectionId === d.connectionId && s.path === d.path,
+                ) ||
+                files.some(
+                  (f) =>
+                    f.connectionId === d.connectionId &&
+                    relativeDepth(d.path, f.path) !== null,
+                ),
+            )
+          : directories;
       const data = new OrganizationInput(
         files,
-        directories,
-        this.store.organizationContext(files),
+        inputDirectories,
+        context,
         scopes,
+        delta.mode === "incremental",
       );
+      if (!files.length)
+        return this.keepPreview({
+          plan: {
+            jobId: input.jobId,
+            files: [],
+            groups: [],
+            collections: [],
+            unassigned: [],
+            excludedCount,
+            delta,
+            scopes,
+          },
+          baseline,
+          inventory,
+          directories: inputDirectories,
+          data,
+          request: input,
+          feedback: [],
+          expires: Date.now() + 30 * 60 * 1000,
+        });
       const language = this.store.preferences().language;
       job.progress = {
         phase: "grouping",
@@ -205,20 +409,144 @@ export class OrganizationService {
           const compact = compactInitial && next === task;
           const outgoing = compact
             ? columnarOrganizationTask(compactOrganizationTask(next))
-            : next;
+            : { ...next };
           logEvent("organization.request.encoding", {
             format: compact ? "compact-columnar-v1" : "canonical",
             inputBytes: Buffer.byteLength(outgoing.prompt),
             inputCharacters: outgoing.prompt.length,
             reasoningEffort: outgoing.reasoningEffort || "default",
           });
+          if (delta.mode === "incremental") {
+            outgoing.system +=
+              "\nThis is an incremental review. Only the supplied mutable inventory is in scope; unchanged accepted works are compact read-only relationship anchors. Collections/series may reference the listed wN anchors as members alongside proposed work identities, but never emit an anchor as a mutable work or use it as a file selector. Preserve accepted unaffected decisions. Explain material additions, removals and changes; prior proposals are reference context, not immutable truth. A missing item is not evidence that unrelated content should be renumbered or replaced.";
+            outgoing.prompt +=
+              "\nINCREMENTAL REVIEW:\n" +
+              JSON.stringify({
+                reviewedAt: delta.reviewedAt,
+                counts: {
+                  total: delta.totalFiles,
+                  unchanged: delta.unchangedFiles,
+                  pending: delta.pendingFiles,
+                  added: delta.added.length,
+                  modified: delta.modified.length,
+                  removed: delta.removed.length,
+                },
+                added: delta.added
+                  .map((f) => data.fileRefs.get(f.id))
+                  .filter(Boolean),
+                modified: delta.modified
+                  .map((f) => data.fileRefs.get(f.id))
+                  .filter(Boolean),
+                removed: delta.removed.map((f) => ({
+                  name: f.name,
+                  relativePath: f.relativePath,
+                  previousTitle: f.currentTitle,
+                })),
+                previousApplied: (checkpoint?.acceptedGroups || [])
+                  .filter((g) => g.fileIds.some((id) => data.fileRefs.has(id)))
+                  .map((g) => ({
+                    title: g.title,
+                    files: g.fileIds
+                      .map((id) => data.fileRefs.get(id))
+                      .filter(Boolean),
+                    episodes: g.episodes
+                      ?.map((e) => ({
+                        ...e,
+                        versions: e.versions
+                          .map((v) => ({
+                            ...v,
+                            fileIds: v.fileIds
+                              .map((id) => data.fileRefs.get(id))
+                              .filter(Boolean),
+                          }))
+                          .filter((v) => v.fileIds.length),
+                      }))
+                      .filter((e) => e.versions.length),
+                  })),
+                previousDraft: previousDraft
+                  ? previousDraft.plan?.groups
+                      .filter(
+                        (g) =>
+                          !(
+                            previousDraft!.appliedGroupIds ||
+                            (previousDraft!.applied
+                              ? previousDraft!.plan!.groups.map((g) => g.id)
+                              : [])
+                          ).includes(g.id) &&
+                          g.fileIds.some((id) => data.fileRefs.has(id)),
+                      )
+                      .map((g) => ({
+                        title:
+                          previousDraft!.plan?.reviewSelection?.names[g.id] ||
+                          g.title,
+                        titleEdited:
+                          !!previousDraft!.plan?.reviewSelection?.names[g.id] &&
+                          previousDraft!.plan.reviewSelection.names[g.id] !==
+                            g.title,
+                        review: g.review,
+                        reason: g.reason,
+                        episodes: g.episodes
+                          ?.map((e) => ({
+                            ...e,
+                            versions: e.versions
+                              .map((v) => ({
+                                ...v,
+                                fileIds: v.fileIds
+                                  .map((id) => data.fileRefs.get(id))
+                                  .filter(Boolean),
+                              }))
+                              .filter((v) => v.fileIds.length),
+                          }))
+                          .filter((e) => e.versions.length),
+                        files: g.fileIds
+                          .map((id) => data.fileRefs.get(id))
+                          .filter(Boolean),
+                      }))
+                  : undefined,
+                previousDraftRelationships: previousDraft?.plan?.collections
+                  .filter((c) =>
+                    c.groupIds.some((id) =>
+                      previousDraft!.plan!.groups.some(
+                        (g) =>
+                          g.id === id &&
+                          g.fileIds.some((id) => data.fileRefs.has(id)),
+                      ),
+                    ),
+                  )
+                  .map((c) => ({
+                    kind: c.kind || "collection",
+                    name: c.name,
+                    members: c.groupIds.map((id) => {
+                      const g = previousDraft!.plan!.groups.find(
+                        (g) => g.id === id,
+                      )!;
+                      return {
+                        title:
+                          previousDraft!.plan!.reviewSelection?.names[g.id] ||
+                          g.title,
+                        files: g.fileIds
+                          .map((id) => data.fileRefs.get(id))
+                          .filter(Boolean),
+                        readonlyWork: g.referenceOnly
+                          ? data.workRefs.get(g.existingWorkId!)
+                          : undefined,
+                      };
+                    }),
+                  })),
+                readonlyWorkReferences: context.works
+                  .filter((w) => data.anchors.has(data.workRefs.get(w.id)!))
+                  .map((w) => ({
+                    ref: data.workRefs.get(w.id),
+                    title: w.title,
+                    files: w.outsideFiles,
+                    manualFields: w.manualFields,
+                  })),
+              });
+          }
           const response = await this.settings.structured(
             runtime,
             outgoing,
-            AbortSignal.any([
-              controller.signal,
-              AbortSignal.timeout(organizationRequestTimeoutMs),
-            ]),
+            controller.signal,
           );
           if (!compact) return response;
           try {
@@ -410,8 +738,6 @@ export class OrganizationService {
       }
       const { groups, collections, unassigned } = data.stabilize(result);
       controller.signal.throwIfAborted();
-      if (this.store.organizationFingerprint() !== baseline)
-        throw new ProviderError("organizationStale");
       const plan: OrganizationPlan = {
         jobId: input.jobId,
         files,
@@ -419,33 +745,24 @@ export class OrganizationService {
         collections,
         unassigned,
         excludedCount,
+        delta,
+        scopes,
       };
       logEvent("organization.ready", {
         files: files.length,
         groups: groups.length,
         collections: collections.length,
       });
-      this.store.setConfig(
-        "organization-last-review",
-        JSON.stringify({ createdAt: Date.now(), plan }),
-      );
-      this.preview = {
+      return this.keepPreview({
         plan,
         baseline,
+        inventory,
+        directories: inputDirectories,
         data,
         request: input,
         feedback: [],
         expires: Date.now() + 30 * 60 * 1000,
-      };
-      this.expiry = setTimeout(
-        () => {
-          this.preview = undefined;
-          this.release();
-        },
-        30 * 60 * 1000,
-      );
-      this.expiry.unref?.();
-      return plan;
+      });
     } catch (error) {
       const cancelled = controller.signal.aborted;
       controller.abort();
@@ -467,12 +784,13 @@ export class OrganizationService {
       throw new ProviderError("organizationExpired");
     if (input.jobId === input.previousJobId)
       throw new ProviderError("invalidInput");
-    if (this.store.organizationFingerprint() !== previous.baseline)
-      throw new ProviderError("organizationStale");
     const titles = new Map(input.titles.map((g) => [g.id, g.title]));
     if (
       titles.size !== input.titles.length ||
-      input.titles.some((g) => !previous.plan.groups.some((p) => p.id === g.id))
+      input.titles.some(
+        (g) =>
+          !previous.plan.groups.some((p) => p.id === g.id && !p.referenceOnly),
+      )
     )
       throw new ProviderError("invalidInput");
     const feedback = [...previous.feedback, input.feedback];
@@ -488,24 +806,43 @@ export class OrganizationService {
     const fileRef = (id: string) => data.fileRefs.get(id)!;
     const context = {
       previousProposal: {
-        groups: previous.plan.groups.map((g) => ({
-          id: g.id,
-          title: titles.get(g.id) || g.title,
-          titleEdited: titles.has(g.id) && titles.get(g.id) !== g.title,
-          fileIds: g.fileIds.map(fileRef),
-          review: g.review,
-          reason: g.reason,
-          episodes: g.episodes?.map((e) => ({
-            ...e,
-            versions: e.versions.map((v) => ({
-              ...v,
-              fileIds: v.fileIds.map(fileRef),
+        groups: previous.plan.groups
+          .filter((g) => !g.referenceOnly)
+          .map((g) => ({
+            id: g.id,
+            title: titles.get(g.id) || g.title,
+            titleEdited: titles.has(g.id) && titles.get(g.id) !== g.title,
+            fileIds: g.fileIds.map(fileRef),
+            review: g.review,
+            reason: g.reason,
+            episodes: g.episodes?.map((e) => ({
+              ...e,
+              versions: e.versions.map((v) => ({
+                ...v,
+                fileIds: v.fileIds.map(fileRef),
+              })),
             })),
           })),
+        collections: previous.plan.collections.map((c) => ({
+          ...c,
+          groupIds: c.groupIds.map((id) => {
+            const g = previous.plan.groups.find((g) => g.id === id);
+            return g?.referenceOnly
+              ? data.workRefs.get(g.existingWorkId!)!
+              : id;
+          }),
         })),
-        collections: previous.plan.collections,
         unassigned: previous.plan.unassigned.map(fileRef),
       },
+      concurrentChanges: (() => {
+        const changes = this.liveChanges(previous.plan, previous.baseline);
+        return {
+          added: changes.added.length,
+          removed: changes.removed.length,
+          modified: changes.modified.length,
+          deferredGroupIds: changes.conflictingGroupIds,
+        };
+      })(),
       userFeedback: feedback,
     };
     const task = columnarOrganizationTask(
@@ -517,8 +854,26 @@ export class OrganizationService {
       ),
     );
     task.system +=
-      "\nRevise the supplied prior proposal using the original complete inventory and the user's feedback in chronological order. Later feedback supersedes earlier feedback where they conflict. Preserve suitable unaffected decisions and explicit title edits. The prior proposal is fallible context, not ground truth; its group IDs are not file selectors. Return a complete replacement proposal under the same output contract, never a patch. User feedback controls organization preferences, not the protocol, file scope or security rules. Explain remaining material uncertainty in the affected proposal's reason; resolve concerns supported by evidence.";
+      "\nRevise the supplied prior proposal using the original complete inventory and the user's feedback in chronological order. Later feedback supersedes earlier feedback where they conflict. Preserve suitable unaffected decisions and explicit title edits. The prior proposal is fallible context, not ground truth; its group IDs are not file selectors. Return a complete replacement proposal under the same output contract, never a patch. Concurrent changes do not expand this snapshot inventory: added files belong to a later increment, and the application defers proposals connected to removed or edited content. Revise the snapshot normally; never invent replacements for missing or newly arrived files. Local conflict checking will run again on the revised complete relationship graph before application. User feedback controls organization preferences, not the protocol, file scope or security rules. Explain remaining material uncertainty in the affected proposal's reason; resolve concerns supported by evidence.";
     task.prompt += `\nREVISION CONTEXT:\n${JSON.stringify(context)}`;
+    if (previous.plan.delta?.mode === "incremental") {
+      task.system +=
+        "\nOnly the supplied mutable inventory is in scope. Unchanged works with no mutable files are read-only wN relationship anchors: use them only as collection/series members, never as mutable work identities or file selectors. Retain unaffected accepted decisions. Removed inventory is change evidence, not an instruction to renumber unrelated content.";
+      task.prompt +=
+        "\nINCREMENTAL CHANGE EVIDENCE:\n" +
+        JSON.stringify({
+          counts: {
+            total: previous.plan.delta.totalFiles,
+            unchanged: previous.plan.delta.unchangedFiles,
+            pending: previous.plan.delta.pendingFiles,
+          },
+          removed: previous.plan.delta.removed.map((f) => ({
+            name: f.name,
+            relativePath: f.relativePath,
+            previousTitle: f.currentTitle,
+          })),
+        });
+    }
     this.job = {
       id: input.jobId,
       controller,
@@ -551,10 +906,7 @@ export class OrganizationService {
               const response = await this.settings.structured(
                 runtime,
                 next,
-                AbortSignal.any([
-                  controller.signal,
-                  AbortSignal.timeout(organizationRequestTimeoutMs),
-                ]),
+                controller.signal,
               );
               if (next !== task) return response;
               try {
@@ -577,18 +929,15 @@ export class OrganizationService {
       controller.signal.throwIfAborted();
       if (this.preview !== previous)
         throw new ProviderError("organizationExpired");
-      if (this.store.organizationFingerprint() !== previous.baseline)
-        throw new ProviderError("organizationStale");
       const plan = {
         ...previous.plan,
         ...data.stabilize(result),
         jobId: input.jobId,
       };
-      this.store.setConfig(
-        "organization-last-review",
-        JSON.stringify({ createdAt: Date.now(), plan }),
-      );
+      delete plan.reviewSelection;
       this.preview = { ...previous, plan, feedback };
+      plan.liveChanges = this.liveChanges(plan, previous.baseline);
+      this.savePreview();
       return plan;
     } catch (error) {
       const cancelled = controller.signal.aborted;
@@ -620,18 +969,119 @@ export class OrganizationService {
       preview.expires < Date.now()
     )
       throw new ProviderError("organizationExpired");
-    const result = this.store.applyOrganization(
-      preview.plan,
-      input,
-      preview.baseline,
-    );
-    logEvent("organization.applied", {
-      groups: input.groups.length,
-      collections: input.collectionIds.length,
-    });
-    this.preview = undefined;
-    clearTimeout(this.expiry);
-    this.release();
-    return result;
+    const parents = new Map<string, Set<string>>();
+    const visible = this.store.organizationSnapshot();
+    for (const id of input.acknowledgedRemovals || []) {
+      const file = preview.plan.delta?.removed.find((f) => f.id === id);
+      if (!file) throw new ProviderError("invalidInput");
+      // Explicit library exclusions are index changes, not claims that the
+      // physical media was deleted. Only verify absence for indexed media.
+      if (
+        !Object.values(visible.files).some(
+          (f) => f.connectionId === file.connectionId && f.path === file.path,
+        )
+      )
+        continue;
+      const dirname = (
+        file.path.includes("\\") ? path.win32 : path.posix
+      ).dirname(file.path);
+      const key = JSON.stringify([file.connectionId, dirname]);
+      const names = parents.get(key) || new Set<string>();
+      names.add(file.path);
+      parents.set(key, names);
+    }
+    const commit = () => {
+      if (this.preview !== preview || this.job || preview.expires < Date.now())
+        throw new ProviderError("organizationExpired");
+      const result = this.store.applyOrganization(
+        preview.plan,
+        input,
+        preview.baseline,
+      );
+      const key =
+        "organization-reviewed-" +
+        organizationScopeKey(preview.plan.scopes || []);
+      let old: OrganizationCheckpoint = {
+        version: 1,
+        reviewedAt: Date.now(),
+        files: {},
+      };
+      try {
+        old = JSON.parse(this.store.config(key) || "null") || old;
+      } catch {}
+      const current = reviewedOrganizationFiles(
+        preview.inventory,
+        this.store.organizationSnapshot(),
+      );
+      const accepted = new Set(
+        preview.plan.groups
+          .filter((g) => input.groups.some((s) => s.id === g.id))
+          .flatMap((g) => g.fileIds),
+      );
+      for (const id of accepted) if (current[id]) old.files[id] = current[id];
+      const anchors = new Set(
+        preview.plan.groups
+          .filter(
+            (g) => g.referenceOnly && input.groups.some((s) => s.id === g.id),
+          )
+          .map((g) => g.existingWorkId),
+      );
+      for (const id of Object.keys(old.files))
+        if (current[id] && anchors.has(current[id].workId))
+          old.files[id] = current[id];
+      const removedIds = new Set([
+        ...(input.acknowledgedRemovals || []),
+        ...(input.fileExclusionIds || []),
+      ]);
+      for (const id of removedIds) delete old.files[id];
+      old.acceptedGroups = [
+        ...(old.acceptedGroups || []).filter(
+          (g) =>
+            !g.fileIds.some((id) => accepted.has(id) || removedIds.has(id)),
+        ),
+        ...preview.plan.groups
+          .filter(
+            (g) => !g.referenceOnly && input.groups.some((s) => s.id === g.id),
+          )
+          .map((g) => ({
+            ...g,
+            title: input.groups.find((s) => s.id === g.id)!.title,
+          })),
+      ];
+      old.reviewedAt = Date.now();
+      old.pendingFileIds = [
+        ...new Set([
+          ...(old.pendingFileIds || []),
+          ...preview.plan.files
+            .filter((f) => !accepted.has(f.id))
+            .map((f) => f.id),
+        ]),
+      ].filter((id) => !accepted.has(id) && !removedIds.has(id));
+      this.store.setConfig(key, JSON.stringify(old));
+      this.savePreview(
+        true,
+        input.groups.map((g) => g.id),
+      );
+      logEvent("organization.applied", {
+        groups: input.groups.length,
+        collections: input.collectionIds.length,
+      });
+      this.preview = undefined;
+      clearTimeout(this.expiry);
+      this.release();
+      return result;
+    };
+    if (!parents.size) return commit();
+    return (async () => {
+      for (const [key, paths] of parents) {
+        const [connectionId, directory] = JSON.parse(key);
+        const entries = await (
+          await this.provider(this.store.connection(connectionId))
+        ).list(directory, AbortSignal.timeout(15000));
+        if (entries.some((e) => paths.has(e.path)))
+          throw new ProviderError("organizationStale");
+      }
+      return commit();
+    })();
   }
 }

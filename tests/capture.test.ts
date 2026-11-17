@@ -1031,6 +1031,60 @@ test("multiple selected qualities keep episode numbering and distinct output fil
   }
 });
 
+test("episode quality overrides persist separately and batch actions affect only selected items", async () => {
+  const f = await setup();
+  const manager = new VideoDownloads({
+    store: f.store,
+    cache: path.join(f.root, "cache"),
+    request: fetch,
+    resolve: async () => {
+      throw new Error("fixture-unavailable");
+    },
+    mux: async () => {},
+    target: (...args) => f.storage.target(...args),
+    publish: (...args) => f.storage.publish(...args),
+    completed: async () => undefined,
+    emit: () => {},
+  });
+  try {
+    const job = await manager.enqueue(
+      "Quality exceptions",
+      [resource(1), resource(2), resource(3)],
+      { connectionId: "local", path: f.root },
+      true,
+      [112],
+      undefined,
+      undefined,
+      undefined,
+      new Map([[resource(2).id, [80, 64]]]),
+    );
+    assert.deepEqual(
+      job.items.map((i) => i.resource.quality),
+      [112, 80, 64, 112],
+    );
+    const selected = [job.items[0].id, job.items[1].id];
+    manager.command(job.id, "pause", selected);
+    assert(job.items.slice(0, 2).every((i) => i.state === "paused"));
+    assert.notEqual(job.items[2].state, "paused");
+    assert.throws(
+      () => manager.command(job.id, "cancel", [selected[0], "unknown"]),
+      /transferUnavailable/,
+    );
+    assert.equal(job.items[0].state, "paused");
+    manager.command(job.id, "cancel", selected);
+    assert(job.items.slice(0, 2).every((i) => i.state === "cancelled"));
+    assert.equal(f.store.downloadJobs()[0].items[1].resource.quality, 80);
+    await manager.remove(job.id, selected);
+    assert.equal(job.items.length, 2);
+    assert.equal(job.items[0].resource.aid, 2);
+    assert.equal(job.items[0].resource.quality, 64);
+    assert.equal(job.items[1].resource.aid, 3);
+  } finally {
+    await manager.close();
+    await f.close();
+  }
+});
+
 test("media parsing uses approved HTTPS backup addresses when primary is unsupported", () => {
   const stream = {
     url: "https://edge.mcdn.bilivideo.cn:4483/video",

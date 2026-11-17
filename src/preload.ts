@@ -30,3 +30,11 @@ contextBridge.exposeInMainWorld("tamki", {
   onOpenPage: (callback: (page: unknown) => void) =>
     subscribe("browser:open-page", callback),
 });
+// The trusted shell shares the validated quick-panel protocol. Remote pages
+// still have no application preload or bridge.
+contextBridge.exposeInMainWorld("tamkiTabs", {
+  action: (type: string, value?: unknown) =>
+    ipcRenderer.invoke("tabs:action", { type, value }),
+  onState: (callback: (state: unknown) => void) =>
+    subscribe("tabs:state", callback),
+});

@@ -65,12 +65,8 @@ try {
     base + "/one",
   );
   await shell.evaluate(() => window.tamki.action("history-open"));
-  const panel = app
-    .context()
-    .pages()
-    .find((page) => page.url().includes("tab-picker.html"));
-  await panel.waitForFunction(() => window.tamkiTabs);
-  const data = await panel.evaluate(() => window.tamkiTabs.action("state"));
+  await shell.locator(".toolbar-panel").waitFor();
+  const data = await shell.evaluate(() => window.tamkiTabs.action("state"));
   assert.equal(
     data.history.filter((entry) => entry.url.startsWith(base)).length,
     2,

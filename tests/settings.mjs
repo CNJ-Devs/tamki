@@ -2,6 +2,84 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 export async function checkSettings(app, shell, base, profile) {
+  const iconGroup = shell.getByRole("radiogroup", {
+    name: "App icon",
+    exact: true,
+  });
+  const original = await shell.evaluate(
+    async () => (await window.tamki.library("state")).preferences,
+  );
+  const observeDock = await app.evaluate(({ app }) => {
+    globalThis.__iconCalls = [];
+    if (!app.dock) return false;
+    const setIcon = app.dock.setIcon.bind(app.dock);
+    globalThis.__restoreDockIcon = () => {
+      app.dock.setIcon = setIcon;
+    };
+    app.dock.setIcon = (image) => {
+      const size = image.getSize(),
+        bytes = image.toBitmap(),
+        at = (80 * size.width + Math.floor(size.width / 2)) * 4;
+      globalThis.__iconCalls.push([bytes[at + 2], bytes[at + 1], bytes[at]]);
+    };
+    return true;
+  });
+  const preferences = (patch) =>
+    shell.evaluate(async (patch) => {
+      const state = await window.tamki.library("state");
+      await window.tamki.library("preferences", {
+        ...state.preferences,
+        ...patch,
+      });
+    }, patch);
+  await iconGroup
+    .getByRole("radio", { name: "Color base", exact: true })
+    .click();
+  await shell.waitForFunction(
+    async () =>
+      (await window.tamki.library("state")).preferences.appIconStyle ===
+      "color",
+  );
+  await preferences({ palette: "hazel" });
+  assert.match(
+    await iconGroup.locator("img").last().getAttribute("src"),
+    /color-hazel\.png$/,
+  );
+  if (observeDock)
+    assert.deepEqual(
+      await app.evaluate(() => globalThis.__iconCalls.at(-1)),
+      [186, 79, 48],
+    );
+  const changes = await app.evaluate(() => globalThis.__iconCalls.length);
+  await preferences({ mode: "dark" });
+  await preferences({ mode: "system" });
+  assert.equal(
+    await app.evaluate(() => globalThis.__iconCalls.length),
+    changes,
+    "day/night changes must not alter the app icon",
+  );
+  await iconGroup.getByRole("radio", { name: "Default", exact: true }).click();
+  await preferences({ palette: "mist" });
+  if (observeDock)
+    assert.deepEqual(
+      await app.evaluate(() => globalThis.__iconCalls.at(-1)),
+      [233, 160, 127],
+    );
+  await iconGroup
+    .getByRole("radio", { name: "Light base", exact: true })
+    .click();
+  assert.match(
+    await iconGroup.locator("img").nth(1).getAttribute("src"),
+    /light-mist\.png$/,
+  );
+  if (observeDock)
+    assert.deepEqual(
+      await app.evaluate(() => globalThis.__iconCalls.at(-1)),
+      [232, 236, 244],
+    );
+  await iconGroup.screenshot({ path: "test-results/settings-app-icons.png" });
+  await app.evaluate(() => globalThis.__restoreDockIcon?.());
+  await preferences({ ...original, appIconStyle: "color" });
   const series = shell.locator('[data-save-kind="series"]');
   await series.getByRole("radio", { name: "Fixed", exact: true }).click();
   await series.getByRole("combobox").click();

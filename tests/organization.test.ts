@@ -399,6 +399,10 @@ test("organization rejects unknown IDs, omissions, nested collections, stale edi
       /invalidInput/,
     );
     f.store.saveCollection({ name: "Concurrent collection", workIds: [] });
+    f.store.saveConnection({
+      ...f.store.connection("storage"),
+      scanDepths: { "/library": 1 },
+    });
     assert.throws(
       () =>
         f.organizer.apply({
@@ -1590,6 +1594,727 @@ test("cancelled feedback preserves the original proposal and rejects apply while
       }),
       /invalidInput/,
     );
+  } finally {
+    f.close();
+  }
+});
+
+test("newly indexed additions do not invalidate a proposal or overwrite the added file", async () => {
+  const f = fixture();
+  try {
+    f.store.applyScan(
+      "storage",
+      "/library",
+      await scanScopes(f.provider, [{ root: "/library", depth: 2 }]),
+    );
+    const plan = await f.organizer.run(f.request);
+    const extra = file("/library/Mixed/Example.S03E01.mkv");
+    f.tree["/library/Mixed"].push(extra);
+    f.store.applyScan(
+      "storage",
+      "/library",
+      await scanScopes(f.provider, [{ root: "/library", depth: 2 }]),
+    );
+    const status = f.organizer.progress(plan.jobId)!;
+    assert.equal(status.changes?.added.length, 1);
+    assert.equal(status.changes?.blocked, false);
+    f.organizer.apply({
+      jobId: plan.jobId,
+      groups: plan.groups.map(({ id, title }) => ({ id, title })),
+      collectionIds: [],
+    });
+    const paths = f.store
+      .snapshot()
+      .works.flatMap((w) =>
+        w.episodes.flatMap((e) =>
+          e.versions!.flatMap((v) => v.files.map((f) => f.path)),
+        ),
+      );
+    assert.equal(paths.filter((p) => p === extra.path).length, 1);
+    assert.equal(paths.length, 6);
+  } finally {
+    f.organizer.close();
+    f.store.close();
+  }
+});
+
+test("semantic edits defer the full relationship component while independent proposals apply and pending work survives", async () => {
+  const f = fixture();
+  try {
+    f.store.applyScan(
+      "storage",
+      "/library",
+      await scanScopes(f.provider, [{ root: "/library", depth: 2 }]),
+    );
+    const plan = await f.organizer.run(f.request);
+    const w = f.store
+      .snapshot()
+      .works.find((w) => w.path === "/library/Mixed")!;
+    f.store.edit({
+      id: w.id,
+      title: "Human choice",
+      description: w.description,
+      tags: w.tags,
+      removedEpisodeIds: [],
+      episodes: w.episodes.map((e) => ({
+        id: e.id,
+        number: e.number,
+        title: e.title,
+        description: e.description,
+      })),
+    });
+    assert.equal(f.organizer.progress(plan.jobId)?.changes?.blocked, true);
+    const status = f.organizer.progress(plan.jobId)!;
+    const affected = plan.groups.filter((g) => g.title.includes("Season"));
+    assert(
+      affected.every((g) => status.changes!.conflictingGroupIds.includes(g.id)),
+    );
+    const movie = plan.groups.find((g) => g.title === "Movie")!;
+    assert(!status.changes!.conflictingGroupIds.includes(movie.id));
+    assert.throws(
+      () =>
+        f.organizer.apply({
+          jobId: plan.jobId,
+          groups: [{ id: affected[0].id, title: affected[0].title }],
+          collectionIds: [],
+        }),
+      /organizationStale/,
+    );
+    f.organizer.apply({
+      jobId: plan.jobId,
+      groups: [{ id: movie.id, title: movie.title }],
+      collectionIds: [],
+    });
+    const next = await f.organizer.run({
+      ...f.request,
+      jobId: "pending-related",
+      mode: "incremental",
+    });
+    assert.equal(next.delta?.unchangedFiles, 1);
+    assert.equal(next.files.length, 4);
+    assert(next.files.every((f) => f.path.includes("Mixed")));
+  } finally {
+    f.organizer.close();
+    f.store.close();
+  }
+});
+
+test("incremental generation omits accepted unchanged file inventories and skips AI when there is no delta", async () => {
+  const f = fixture();
+  try {
+    const first = await f.organizer.run({ ...f.request, mode: "incremental" });
+    f.organizer.apply({
+      jobId: first.jobId,
+      groups: first.groups.map(({ id, title }) => ({ id, title })),
+      collectionIds: [],
+    });
+    const calls = f.calls.length;
+    const clean = await f.organizer.run({
+      ...f.request,
+      jobId: "clean",
+      mode: "incremental",
+    });
+    assert.equal(clean.files.length, 0);
+    assert.equal(clean.delta?.unchangedFiles, 5);
+    assert.equal(f.calls.length, calls);
+    f.organizer.cancel(clean.jobId);
+    f.tree["/library/Other"].push(file("/library/Other/Additional.mkv"));
+    const changed = await f.organizer.run({
+      ...f.request,
+      jobId: "increment",
+      mode: "incremental",
+    });
+    assert.equal(changed.delta?.mode, "incremental");
+    assert.equal(changed.files.length, 1);
+    assert.equal(changed.delta?.unchangedFiles, 5);
+    assert.equal(changed.delta?.added.length, 1);
+    const task = f.calls.at(-1)!;
+    assert.match(task.prompt, /INCREMENTAL REVIEW/);
+    const packet = JSON.parse(canonicalFixtureTask(task).prompt.split("\n")[1]);
+    assert.equal(packet.files.length, 1);
+    assert(changed.files.every((f) => f.name === "Additional.mkv"));
+  } finally {
+    f.organizer.close();
+    f.store.close();
+  }
+});
+
+test("partial application approves only the selected files; unresolved files remain incremental input", async () => {
+  const f = fixture();
+  try {
+    const first = await f.organizer.run({ ...f.request, mode: "incremental" });
+    const selected = first.groups.find((g) => g.title.includes("Season 1"))!;
+    f.organizer.apply({
+      jobId: first.jobId,
+      groups: [{ id: selected.id, title: selected.title }],
+      collectionIds: [],
+    });
+    const next = await f.organizer.run({
+      ...f.request,
+      jobId: "next",
+      mode: "incremental",
+    });
+    assert.equal(next.delta?.unchangedFiles, 2);
+    assert.equal(next.files.length, 3);
+    assert(next.files.every((f) => !selected.fileIds.includes(f.id)));
+  } finally {
+    f.organizer.close();
+    f.store.close();
+  }
+});
+
+test("review choices survive leaving the preview without becoming an approval checkpoint", async () => {
+  const f = fixture();
+  try {
+    const first = await f.organizer.run(f.request),
+      g = first.groups[0];
+    f.organizer.saveSelection({
+      jobId: first.jobId,
+      groups: [g.id],
+      collections: [],
+      names: Object.fromEntries(
+        first.groups.map((x) => [
+          x.id,
+          x.id === g.id ? "Edited draft" : x.title,
+        ]),
+      ),
+    });
+    f.organizer.cancel(first.jobId);
+    const restored = f.organizer.resume()!;
+    assert.equal(restored.reviewSelection?.names[g.id], "Edited draft");
+    assert.deepEqual(restored.reviewSelection?.groups, [g.id]);
+    f.organizer.cancel(first.jobId);
+    const next = await f.organizer.run({
+      ...f.request,
+      jobId: "not-approved",
+      mode: "incremental",
+    });
+    assert.equal(next.files.length, 5);
+    assert.equal(next.delta?.mode, "full");
+  } finally {
+    f.organizer.close();
+    f.store.close();
+  }
+});
+
+test("confirmed removals have explicit approval and are not silently forgotten or applied to a restored file", async () => {
+  const f = fixture();
+  try {
+    const first = await f.organizer.run({ ...f.request, mode: "incremental" });
+    f.organizer.apply({
+      jobId: first.jobId,
+      groups: first.groups.map(({ id, title }) => ({ id, title })),
+      collectionIds: [],
+    });
+    f.tree["/library/Other"] = [];
+    const next = await f.organizer.run({
+      ...f.request,
+      jobId: "remove",
+      mode: "incremental",
+    });
+    assert.equal(next.delta?.removed.length, 1);
+    assert.equal(next.files.length, 0);
+    assert.throws(
+      () =>
+        f.organizer.apply({ jobId: next.jobId, groups: [], collectionIds: [] }),
+      /invalidInput/,
+    );
+    const removed = next.delta!.removed[0];
+    f.tree["/library/Other"] = [file(removed.path)];
+    await assert.rejects(
+      f.organizer.apply({
+        jobId: next.jobId,
+        groups: [],
+        collectionIds: [],
+        acknowledgedRemovals: [removed.id],
+      }) as Promise<unknown>,
+      /organizationStale/,
+    );
+    f.tree["/library/Other"] = [];
+    await f.organizer.apply({
+      jobId: next.jobId,
+      groups: [],
+      collectionIds: [],
+      acknowledgedRemovals: [removed.id],
+    });
+    const clean = await f.organizer.run({
+      ...f.request,
+      jobId: "after-removal",
+      mode: "incremental",
+    });
+    assert.equal(clean.delta?.removed.length, 0);
+    assert.equal(clean.files.length, 0);
+    assert(
+      !f.store
+        .snapshot()
+        .works.some((w) => w.episodes.some((e) => e.path === removed.path)),
+    );
+  } finally {
+    f.organizer.close();
+    f.store.close();
+  }
+});
+
+test("saved series and collections propagate a removal across the whole connected proposal", async () => {
+  const f = fixture();
+  try {
+    f.store.applyScan(
+      "storage",
+      "/library",
+      await scanScopes(f.provider, [{ root: "/library", depth: 2 }]),
+    );
+    const works = f.store.snapshot().works;
+    const series = f.store.saveSeries({
+      name: "Saved relationship",
+      workIds: works.map((w) => w.id),
+    });
+    f.store.saveCollection({
+      name: "Saved collection",
+      workIds: [],
+      seriesIds: [series.id],
+    });
+    const plan = await f.organizer.run(f.request);
+    const movie = works.find((w) => w.path === "/library/Other")!;
+    f.store.removeWork(movie.id);
+    const changes = f.organizer.progress(plan.jobId)!.changes!;
+    assert.equal(changes.blocked, true);
+    assert.deepEqual(
+      new Set(changes.conflictingGroupIds),
+      new Set(plan.groups.map((g) => g.id)),
+    );
+    assert.throws(
+      () =>
+        f.organizer.apply({
+          jobId: plan.jobId,
+          groups: plan.groups.map(({ id, title }) => ({ id, title })),
+          collectionIds: [],
+        }),
+      /organizationStale/,
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test("a revised draft clears stale selections and carries pending relationship context into the next increment", async () => {
+  const f = fixture();
+  try {
+    const first = await f.organizer.run({ ...f.request, mode: "incremental" });
+    f.organizer.saveSelection({
+      jobId: first.jobId,
+      groups: [],
+      collections: [],
+      names: { [first.groups[0].id]: "Draft title" },
+    });
+    const revised = await f.organizer.refine({
+      jobId: "revision",
+      previousJobId: first.jobId,
+      feedback: "Review this relationship",
+      titles: [],
+    });
+    assert.equal(revised.reviewSelection, undefined);
+    const movie = revised.groups.find((g) => g.title === "Movie")!;
+    f.organizer.apply({
+      jobId: revised.jobId,
+      groups: [{ id: movie.id, title: movie.title }],
+      collectionIds: [],
+    });
+    const next = await f.organizer.run({
+      ...f.request,
+      jobId: "pending-context",
+      mode: "incremental",
+    });
+    assert.equal(next.files.length, 4);
+    const evidence = JSON.parse(
+      f.calls.at(-1)!.prompt.split("\nINCREMENTAL REVIEW:\n")[1],
+    );
+    assert.equal(evidence.previousDraft.length, 2);
+    assert.equal(evidence.previousDraftRelationships.length, 1);
+    assert(
+      evidence.previousDraftRelationships[0].members.every(
+        (m: { files: string[] }) => m.files.length,
+      ),
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test("explicit library exclusions can be acknowledged without requiring physical source deletion", async () => {
+  const f = fixture();
+  try {
+    const first = await f.organizer.run({ ...f.request, mode: "incremental" });
+    f.organizer.apply({
+      jobId: first.jobId,
+      groups: first.groups.map(({ id, title }) => ({ id, title })),
+      collectionIds: [],
+    });
+    const movie = f.store.snapshot().works.find((w) => w.title === "Movie")!;
+    f.store.removeWork(movie.id);
+    const next = await f.organizer.run({
+      ...f.request,
+      jobId: "exclude",
+      mode: "incremental",
+    });
+    assert.equal(next.delta!.removed.length, 1);
+    await f.organizer.apply({
+      jobId: next.jobId,
+      groups: [],
+      collectionIds: [],
+      acknowledgedRemovals: next.delta!.removed.map((f) => f.id),
+    });
+    assert.equal(f.tree["/library/Other"].length, 1);
+    const clean = await f.organizer.run({
+      ...f.request,
+      jobId: "clean-exclusion",
+      mode: "incremental",
+    });
+    assert.equal(clean.delta!.removed.length, 0);
+  } finally {
+    f.close();
+  }
+});
+
+test("unapplied review choices survive a new organization service without creating an approved baseline", async () => {
+  const f = fixture();
+  let restored: OrganizationService | undefined;
+  try {
+    const first = await f.organizer.run({ ...f.request, mode: "incremental" });
+    f.organizer.saveSelection({
+      jobId: first.jobId,
+      groups: [first.groups[0].id],
+      collections: [],
+      names: { [first.groups[0].id]: "Persistent draft" },
+    });
+    assert.throws(() =>
+      f.organizer.saveSelection({
+        jobId: first.jobId,
+        groups: [first.groups[0].id, first.groups[0].id],
+        collections: [],
+        names: {},
+      }),
+    );
+    f.organizer.close();
+    restored = new OrganizationService(
+      f.store,
+      f.settings,
+      async () => f.provider,
+    );
+    const resumed = restored.resume()!;
+    assert.equal(
+      resumed.reviewSelection!.names[first.groups[0].id],
+      "Persistent draft",
+    );
+    restored.cancel(resumed.jobId);
+    const next = await restored.run({
+      ...f.request,
+      jobId: "after-restart",
+      mode: "incremental",
+    });
+    assert.equal(next.delta!.mode, "full");
+    assert.equal(next.files.length, 5);
+  } finally {
+    restored?.close();
+    f.close();
+  }
+});
+
+test("feedback can revise a conflicted snapshot while changed relationship components remain deferred", async () => {
+  const f = fixture();
+  try {
+    f.store.applyScan(
+      "storage",
+      "/library",
+      await scanScopes(f.provider, [{ root: "/library", depth: 2 }]),
+    );
+    const first = await f.organizer.run(f.request);
+    const work = f.store
+      .snapshot()
+      .works.find((w) => w.path === "/library/Mixed")!;
+    f.store.edit({
+      id: work.id,
+      title: "Updated outside the draft",
+      description: work.description,
+      tags: work.tags,
+      removedEpisodeIds: [],
+      episodes: work.episodes.map(({ id, number, title, description }) => ({
+        id,
+        number,
+        title,
+        description,
+      })),
+    });
+    const next = await f.organizer.refine({
+      jobId: "conflicted-feedback",
+      previousJobId: first.jobId,
+      feedback: "Review the remaining independent work",
+      titles: [],
+    });
+    const changes = f.organizer.progress(next.jobId)!.changes!;
+    assert.equal(changes.blocked, true);
+    const affected = next.groups.filter((g) => g.title.includes("Season"));
+    assert(affected.every((g) => changes.conflictingGroupIds.includes(g.id)));
+    const context = JSON.parse(
+      f.calls.at(-1)!.prompt.split("\nREVISION CONTEXT:\n")[1],
+    );
+    assert.equal(context.concurrentChanges.deferredGroupIds.length, 2);
+    assert.throws(
+      () =>
+        f.organizer.apply({
+          jobId: next.jobId,
+          groups: affected.map(({ id, title }) => ({ id, title })),
+          collectionIds: [],
+        }),
+      /organizationStale/,
+    );
+    const movie = next.groups.find((g) => g.title === "Movie")!;
+    f.organizer.apply({
+      jobId: next.jobId,
+      groups: [{ id: movie.id, title: movie.title }],
+      collectionIds: [],
+    });
+    const pending = await f.organizer.run({
+      ...f.request,
+      jobId: "after-feedback-partial",
+      mode: "incremental",
+    });
+    assert.equal(pending.files.length, 4);
+  } finally {
+    f.close();
+  }
+});
+
+test("explicit relationship removal stays a proposal until apply and preserves member works and files", async () => {
+  const f = fixture();
+  try {
+    f.store.applyScan(
+      "storage",
+      "/library",
+      await scanScopes(f.provider, [{ root: "/library", depth: 2 }]),
+    );
+    const collection = f.store.saveCollection({
+      name: "Temporary grouping",
+      workIds: f.store.snapshot().works.map((w) => w.id),
+    });
+    const plan = await f.organizer.run(f.request);
+    plan.relationshipRemovals = [{ ...collection, kind: "collection" }];
+    assert(f.store.snapshot().collections.some((c) => c.id === collection.id));
+    assert.throws(
+      () =>
+        f.organizer.apply({
+          jobId: plan.jobId,
+          groups: [],
+          collectionIds: [],
+          relationshipRemovalIds: ["unknown"],
+        }),
+      /invalidInput/,
+    );
+    f.organizer.saveSelection({
+      jobId: plan.jobId,
+      groups: [],
+      collections: [],
+      names: {},
+      relationshipRemovals: [collection.id],
+    });
+    assert.deepEqual(
+      f.organizer.resume()!.reviewSelection!.relationshipRemovals,
+      [collection.id],
+    );
+    f.organizer.apply({
+      jobId: plan.jobId,
+      groups: [],
+      collectionIds: [],
+      relationshipRemovalIds: [collection.id],
+    });
+    assert(!f.store.snapshot().collections.some((c) => c.id === collection.id));
+    assert.equal(f.store.snapshot().works.length, 2);
+    assert.equal(f.store.snapshot().works.flatMap((w) => w.episodes).length, 5);
+  } finally {
+    f.close();
+  }
+});
+
+test("a relationship edited after review cannot be deleted by an outdated proposal", async () => {
+  const f = fixture();
+  try {
+    f.store.applyScan(
+      "storage",
+      "/library",
+      await scanScopes(f.provider, [{ root: "/library", depth: 2 }]),
+    );
+    const collection = f.store.saveCollection({
+      name: "Original grouping",
+      workIds: f.store.snapshot().works.map((w) => w.id),
+    });
+    const plan = await f.organizer.run(f.request);
+    plan.relationshipRemovals = [{ ...collection, kind: "collection" }];
+    f.store.saveCollection({ ...collection, name: "New human title" });
+    assert.throws(
+      () =>
+        f.organizer.apply({
+          jobId: plan.jobId,
+          groups: [],
+          collectionIds: [],
+          relationshipRemovalIds: [collection.id],
+        }),
+      /organizationStale/,
+    );
+    assert(
+      f.store
+        .snapshot()
+        .collections.some(
+          (c) => c.id === collection.id && c.name === "New human title",
+        ),
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test("applying a series removal retains its works within containing collections", async () => {
+  const f = fixture();
+  try {
+    f.store.applyScan(
+      "storage",
+      "/library",
+      await scanScopes(f.provider, [{ root: "/library", depth: 2 }]),
+    );
+    const series = f.store.saveSeries({
+      name: "Series to remove",
+      workIds: f.store.snapshot().works.map((w) => w.id),
+    });
+    const collection = f.store.saveCollection({
+      name: "Keep collection",
+      workIds: [],
+      seriesIds: [series.id],
+    });
+    const plan = await f.organizer.run(f.request);
+    plan.relationshipRemovals = [{ ...series, kind: "series" }];
+    f.organizer.apply({
+      jobId: plan.jobId,
+      groups: [],
+      collectionIds: [],
+      relationshipRemovalIds: [series.id],
+    });
+    const next = f.store.snapshot();
+    assert(!next.series!.some((s) => s.id === series.id));
+    const kept = next.collections.find((c) => c.id === collection.id)!;
+    assert.deepEqual(new Set(kept.workIds), new Set(series.workIds));
+    assert.deepEqual(kept.seriesIds, []);
+  } finally {
+    f.close();
+  }
+});
+
+test("reviewed supplementary-file exclusions remove index-only leftovers instead of creating phantom works", async () => {
+  const f = fixture();
+  try {
+    f.store.applyScan(
+      "storage",
+      "/library",
+      await scanScopes(f.provider, [{ root: "/library", depth: 2 }]),
+    );
+    const collection = f.store.saveCollection({
+      name: "Remove with supplements",
+      workIds: f.store.snapshot().works.map((w) => w.id),
+    });
+    const plan = await f.organizer.run(f.request);
+    const movie = plan.groups.find((g) => g.title === "Movie")!,
+      id = movie.fileIds[0];
+    plan.groups = plan.groups.filter((g) => g.id !== movie.id);
+    plan.unassigned = [id];
+    plan.fileExclusions = [id];
+    plan.relationshipRemovals = [{ ...collection, kind: "collection" }];
+    f.organizer.saveSelection({
+      jobId: plan.jobId,
+      groups: [],
+      collections: [],
+      names: {},
+      fileExclusions: [id],
+    });
+    assert(f.store.snapshot().works.some((w) => w.path === "/library/Other"));
+    assert.throws(
+      () =>
+        f.organizer.apply({
+          jobId: plan.jobId,
+          groups: [],
+          collectionIds: [],
+          fileExclusionIds: ["unknown"],
+        }),
+      /invalidInput/,
+    );
+    f.organizer.apply({
+      jobId: plan.jobId,
+      groups: [],
+      collectionIds: [],
+      fileExclusionIds: [id],
+      relationshipRemovalIds: [collection.id],
+    });
+    assert(!f.store.snapshot().works.some((w) => w.path === "/library/Other"));
+    assert.equal(
+      f.tree["/library/Other"].length,
+      1,
+      "source media remains untouched",
+    );
+    f.store.applyScan(
+      "storage",
+      "/library",
+      await scanScopes(f.provider, [{ root: "/library", depth: 2 }]),
+    );
+    assert(!f.store.snapshot().works.some((w) => w.path === "/library/Other"));
+    const next = await f.organizer.run({
+      ...f.request,
+      jobId: "after-supplement-exclusion",
+      mode: "incremental",
+    });
+    assert.equal(next.files.length, 4);
+    assert.equal(next.delta!.removed.length, 0);
+  } finally {
+    f.close();
+  }
+});
+
+test("an exclusion proposal cannot silently remove a file edited after its snapshot", async () => {
+  const f = fixture();
+  try {
+    f.store.applyScan(
+      "storage",
+      "/library",
+      await scanScopes(f.provider, [{ root: "/library", depth: 2 }]),
+    );
+    const plan = await f.organizer.run(f.request),
+      movie = plan.groups.find((g) => g.title === "Movie")!,
+      id = movie.fileIds[0];
+    plan.groups = plan.groups.filter((g) => g.id !== movie.id);
+    plan.unassigned = [id];
+    plan.fileExclusions = [id];
+    const work = f.store
+      .snapshot()
+      .works.find((w) => w.path === "/library/Other")!;
+    f.store.edit({
+      id: work.id,
+      title: "User now wants this",
+      description: work.description,
+      tags: work.tags,
+      removedEpisodeIds: [],
+      episodes: work.episodes.map(({ id, number, title, description }) => ({
+        id,
+        number,
+        title,
+        description,
+      })),
+    });
+    assert.throws(
+      () =>
+        f.organizer.apply({
+          jobId: plan.jobId,
+          groups: [],
+          collectionIds: [],
+          fileExclusionIds: [id],
+        }),
+      /organizationStale/,
+    );
+    assert(f.store.snapshot().works.some((w) => w.id === work.id));
   } finally {
     f.close();
   }

@@ -1,4 +1,5 @@
 import { SeriesEditor } from "./series-editor";
+import { BatchRecognition } from "./batch-recognition";
 import {
   libraryEntries,
   collectionWorkIds,
@@ -53,7 +54,9 @@ import {
   Confirm,
   Modal,
   FormField,
+  HorizontalScroll,
 } from "./common";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group";
 import { Badge } from "./components/ui/badge";
 import { Input } from "./components/ui/input";
@@ -111,9 +114,10 @@ function RecognitionStatus({
 }) {
   const t = useI18n();
   const state = work.recognition;
+  const enabled = automatic || !!state?.requested;
   const busy = state?.status === "queued" || state?.status === "running";
   const key: Message =
-    !automatic && (!state || busy)
+    !enabled && (!state || busy)
       ? "autoDisabled"
       : !state
         ? "autoQueued"
@@ -138,7 +142,7 @@ function RecognitionStatus({
           tabIndex={0}
           aria-label={message}
         >
-          {busy && automatic ? (
+          {busy && enabled ? (
             <CircleNotchIcon className="spin" />
           ) : (
             <InfoIcon />
@@ -157,7 +161,7 @@ function RecognitionStatus({
           {t("recognizeWork")}
         </Button>
       )}
-      {automatic && (state?.status === "failed" || state?.artworkError) && (
+      {enabled && (state?.status === "failed" || state?.artworkError) && (
         <Button
           variant="secondary"
           size="sm"
@@ -195,7 +199,6 @@ function MediaCard({
           id: series.id,
           name: series.name,
           works: seriesWorks(series, state),
-          representative: true,
         }}
         onOpen={onOpen}
       />
@@ -261,14 +264,13 @@ type GroupEntry = {
   id: string;
   name: string;
   works: Work[];
-  representative?: boolean;
 };
 
 function GroupCard({ entry, onOpen }: { entry: GroupEntry; onOpen(): void }) {
   const t = useI18n();
   const covers = [
     ...new Set(entry.works.flatMap((w) => (w.cover ? [w.cover] : []))),
-  ].slice(0, entry.representative ? 1 : 4);
+  ].slice(0, 4);
   return (
     <article className="media-card group-card">
       <button className="cover-button" onClick={onOpen} aria-label={entry.name}>
@@ -295,6 +297,8 @@ function GroupCard({ entry, onOpen }: { entry: GroupEntry; onOpen(): void }) {
 }
 
 function GroupShelf({
+  kind,
+  onKindChange,
   title,
   entries,
   open,
@@ -302,6 +306,8 @@ function GroupShelf({
   add,
   addLabel,
 }: {
+  kind: "collections" | "series";
+  onKindChange(kind: "collections" | "series"): void;
   title: string;
   entries: GroupEntry[];
   open(id: string): void;
@@ -318,9 +324,9 @@ function GroupShelf({
       setColumns(
         Math.max(
           1,
-          getComputedStyle(element)
-            .gridTemplateColumns.split(" ")
-            .filter(Boolean).length,
+          Number(
+            getComputedStyle(element).getPropertyValue("--library-columns"),
+          ) || 6,
         ),
       );
     const observer = new ResizeObserver(update);
@@ -329,9 +335,28 @@ function GroupShelf({
     return () => observer.disconnect();
   }, []);
   return (
-    <section className="library-shelf" aria-label={title}>
+    <Tabs
+      ref={grid}
+      value={kind}
+      onValueChange={(value) => {
+        if (value === "collections" || value === "series") onKindChange(value);
+      }}
+      className="library-shelf"
+    >
       <div className="section-heading">
-        <h2>{title}</h2>
+        <h2 className="library-group-heading">
+          <TabsList
+            asChild
+            variant="line"
+            className="library-group-tabs"
+            aria-label={t("seriesAndCollections")}
+          >
+            <span>
+              <TabsTrigger value="series">{t("series")}</TabsTrigger>
+              <TabsTrigger value="collections">{t("collections")}</TabsTrigger>
+            </span>
+          </TabsList>
+        </h2>
         <div className="actions">
           <IconButton label={addLabel} onClick={add}>
             <PlusIcon />
@@ -343,19 +368,22 @@ function GroupShelf({
           )}
         </div>
       </div>
-      <div className="library-grid" ref={grid}>
-        {entries.slice(0, columns).map((entry) => (
-          <GroupCard
-            key={entry.id}
-            entry={entry}
-            onOpen={() => open(entry.id)}
-          />
-        ))}
-      </div>
-      {!entries.length && (
-        <p className="library-shelf-empty">{t("emptyGroupList")}</p>
-      )}
-    </section>
+      <TabsContent value={kind} key={kind}>
+        {entries.length ? (
+          <HorizontalScroll className="library-group-rail" aria-label={title}>
+            {entries.map((entry) => (
+              <GroupCard
+                key={entry.id}
+                entry={entry}
+                onOpen={() => open(entry.id)}
+              />
+            ))}
+          </HorizontalScroll>
+        ) : (
+          <p className="library-shelf-empty">{t("emptyGroupList")}</p>
+        )}
+      </TabsContent>
+    </Tabs>
   );
 }
 
@@ -372,6 +400,7 @@ export function LibraryPage({
 }) {
   const t = useI18n();
   const [filter, setFilter] = useState("all"),
+    [shelfKind, setShelfKind] = useState<"collections" | "series">("series"),
     [query, setQuery] = useState(""),
     [group, setGroup] = useState("ungrouped"),
     [sort, setSort] = useState("recent"),
@@ -384,6 +413,7 @@ export function LibraryPage({
       id: string;
     } | null>(null),
     [organize, setOrganize] = useState(false),
+    [batchRecognition, setBatchRecognition] = useState(false),
     [newSeries, setNewSeries] = useState(false);
   const location = locations.at(-1);
   const home = !location;
@@ -411,7 +441,6 @@ export function LibraryPage({
     id: s.id,
     name: s.name,
     works: seriesWorks(s, state),
-    representative: true,
   }));
   const collectionEntries = state.collections.map((c) => {
     const ids = new Set(collectionWorkIds(c, state));
@@ -586,24 +615,28 @@ export function LibraryPage({
         key={locations.map((l) => l.kind + ("id" in l ? l.id : "")).join("/")}
       >
         {home && (
-          <>
-            <GroupShelf
-              title={t("collections")}
-              entries={collectionEntries}
-              open={(id) => enter({ kind: "collection", id })}
-              more={() => enter({ kind: "collections" })}
-              add={() => setManage(true)}
-              addLabel={t("newCollection")}
-            />
-            <GroupShelf
-              title={t("series")}
-              entries={seriesEntries}
-              open={(id) => enter({ kind: "series-members", id })}
-              more={() => enter({ kind: "series" })}
-              add={() => setNewSeries(true)}
-              addLabel={t("newSeries")}
-            />
-          </>
+          <GroupShelf
+            kind={shelfKind}
+            onKindChange={setShelfKind}
+            title={t(shelfKind === "collections" ? "collections" : "series")}
+            entries={
+              shelfKind === "collections" ? collectionEntries : seriesEntries
+            }
+            open={(id) =>
+              enter({
+                kind:
+                  shelfKind === "collections" ? "collection" : "series-members",
+                id,
+              })
+            }
+            more={() => enter({ kind: shelfKind })}
+            add={() =>
+              shelfKind === "collections" ? setManage(true) : setNewSeries(true)
+            }
+            addLabel={t(
+              shelfKind === "collections" ? "newCollection" : "newSeries",
+            )}
+          />
         )}
         {catalogue ? (
           catalogueEntries.length ? (
@@ -631,7 +664,16 @@ export function LibraryPage({
           <section className="library-works" aria-label={t("seriesMembers")}>
             {home && (
               <>
-                <h2>{t("seriesMembers")}</h2>
+                <div className="section-heading">
+                  <h2>{t("seriesMembers")}</h2>
+                  <Button
+                    variant="secondary"
+                    onClick={() => setBatchRecognition(true)}
+                    disabled={!state.works.length}
+                  >
+                    {t("batchRecognition")}
+                  </Button>
+                </div>
                 <div className="library-toolbar">
                   <ToggleGroup
                     type="single"
@@ -755,6 +797,16 @@ export function LibraryPage({
         <FilePicker
           connections={state.connections}
           onClose={() => setAdd(false)}
+        />
+      )}
+      {batchRecognition && (
+        <BatchRecognition
+          state={state}
+          onClose={() => setBatchRecognition(false)}
+          onInspect={(id) => {
+            setBatchRecognition(false);
+            detail(id);
+          }}
         />
       )}
       {connect && <ConnectionWizard onClose={() => setConnect(false)} />}

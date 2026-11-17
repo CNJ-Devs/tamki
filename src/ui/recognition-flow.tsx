@@ -41,6 +41,7 @@ export function recognitionOptions(
 ) {
   return [
     { value: "bangumi", label: "Bangumi" },
+    { value: "bilibili", label: "Bilibili" },
     {
       value: "tmdb",
       label: `TMDB${config.tmdbConfigured ? "" : ` · ${unconfiguredLabel}`}`,

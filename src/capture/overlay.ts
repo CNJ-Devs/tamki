@@ -19,6 +19,8 @@ import {
 import { targetSchema } from "../shared/settings";
 import { ProviderError } from "../providers/provider";
 import { MediaCapture } from "./providers";
+import { downloadChoices, selectDownload } from "./selection";
+import { CaptureQualities } from "./qualities";
 import type { VideoDownloads } from "./downloads";
 import type { LibraryService } from "../library/service";
 import { logEvent, diagnosticError } from "../diagnostics";
@@ -42,6 +44,7 @@ export class CaptureOverlay {
     resources: CaptureResource[];
     groups?: CaptureGroup[];
     metadata?: CaptureMetadata;
+    qualities?: CaptureQualities;
   };
   private closed = false;
   private submitting = false;
@@ -100,6 +103,7 @@ export class CaptureOverlay {
             break;
           case "close":
             if (!this.submitting) {
+              this.draft?.qualities?.close();
               this.draft = undefined;
               this.dismiss();
             }
@@ -195,6 +199,7 @@ export class CaptureOverlay {
               (fallback
                 ? { connectionId: fallback.id, path: fallback.roots[0] }
                 : null);
+            this.draft?.qualities?.close();
             this.draft = {
               resources,
               groups: seriesGroups,
@@ -212,6 +217,11 @@ export class CaptureOverlay {
                   series?.title || group?.title || resource!.title,
                 ),
                 count: resources.length,
+                choices: seriesGroups
+                  ? downloadChoices(resources, seriesGroups)
+                  : group
+                    ? downloadChoices(resources, [group])[0].children
+                    : undefined,
                 series: !!group || !!series,
                 hierarchy: seriesGroups?.map((g) => ({
                   title: g.title,
@@ -221,6 +231,30 @@ export class CaptureOverlay {
               },
             };
             const prepared = this.draft;
+            const qualityCheck = new CaptureQualities(
+              resources,
+              (r, signal) => this.options.media.resolve(r, signal),
+              () => {
+                if (this.draft === prepared) {
+                  prepared.value.itemQualities = qualityCheck.items;
+                  if (qualityCheck.items[resources[0].id]?.qualities)
+                    prepared.value.qualityError = undefined;
+                  prepared.value.qualities = [
+                    ...new Map(
+                      [
+                        ...(prepared.value.qualities || []),
+                        ...Object.values(qualityCheck.items).flatMap(
+                          (item) => item.qualities || [],
+                        ),
+                      ].map((q) => [q.id, q]),
+                    ).values(),
+                  ].sort((a, b) => b.id - a.id);
+                  prepared.value.qualityChecking = qualityCheck.checking;
+                  this.emit();
+                }
+              },
+            );
+            prepared.qualities = qualityCheck;
             this.open(true);
             this.emit();
             try {
@@ -229,6 +263,10 @@ export class CaptureOverlay {
                 AbortSignal.timeout(15000),
               );
               prepared.value.qualities = media.qualities || [];
+              qualityCheck.items[resources[0].id] = {
+                qualities: media.qualities || [],
+              };
+              prepared.value.itemQualities = qualityCheck.items;
             } catch (error) {
               prepared.value.qualityError =
                 error instanceof Error ? error.message : "captureUnavailable";
@@ -242,6 +280,31 @@ export class CaptureOverlay {
           case "list":
             data = await this.options.library.request("list", value);
             break;
+          case "check-qualities": {
+            const input = z
+              .object({
+                draftId: z.string().uuid(),
+                resourceIds: z.array(z.string().max(150)).max(10000),
+                append: z.boolean().optional(),
+                retry: z.boolean().optional(),
+              })
+              .strict()
+              .parse(value);
+            if (
+              !this.draft ||
+              this.draft.value.id !== input.draftId ||
+              input.resourceIds.some(
+                (id) => !this.draft!.resources.some((r) => r.id === id),
+              )
+            )
+              throw new ProviderError("captureChanged");
+            this.draft.qualities?.request(
+              input.resourceIds,
+              !input.append,
+              input.retry,
+            );
+            break;
+          }
           case "roots":
             data = await this.options.library.request("browse-roots", value);
             break;
@@ -257,6 +320,7 @@ export class CaptureOverlay {
             break;
           }
           case "settings":
+            this.draft?.qualities?.close();
             if (!this.submitting) {
               this.draft = undefined;
               this.dismiss();
@@ -278,14 +342,42 @@ export class CaptureOverlay {
             if (this.submitting) throw new ProviderError("downloadBusy");
             this.submitting = true;
             try {
+              const selected = selectDownload(
+                draft.resources,
+                draft.groups,
+                input.resourceIds,
+              );
+              const overrides = new Map(
+                input.qualityOverrides?.map((o) => [o.resourceId, o.qualities]),
+              );
+              if (
+                [...overrides.keys()].some(
+                  (id) => !selected.resources.some((r) => r.id === id),
+                )
+              )
+                throw new ProviderError("captureChanged");
+              for (const resource of selected.resources) {
+                const desired = overrides.has(resource.id)
+                  ? overrides.get(resource.id)!
+                  : input.qualities || [0];
+                const known =
+                  draft.value.itemQualities?.[resource.id]?.qualities;
+                if (
+                  known &&
+                  desired.some((q) => q !== 0 && !known.some((v) => v.id === q))
+                )
+                  throw new ProviderError("captureRestricted");
+              }
               const job = await this.options.downloads.enqueue(
                 input.name,
-                draft.resources,
+                selected.resources,
                 input.target,
                 draft.value.series,
                 input.qualities,
-                draft.groups,
+                selected.groups,
                 draft.metadata,
+                selected.positions,
+                overrides,
               );
               const settings = this.options.library.settings.snapshot();
               const connection = this.options.library.store.connection(
@@ -302,6 +394,7 @@ export class CaptureOverlay {
                       : input.target.path,
                 };
               this.options.library.settings.save(settings);
+              draft.qualities?.close();
               this.draft = undefined;
               this.dismiss();
               data = { id: job.id };
@@ -428,7 +521,10 @@ export class CaptureOverlay {
       this.current = next;
       this.pageContext = undefined;
       this.controller?.abort();
-      if (!this.submitting) this.draft = undefined;
+      if (!this.submitting) {
+        this.draft?.qualities?.close();
+        this.draft = undefined;
+      }
       this.dismiss();
       this.snapshot = {
         status: this.options.media.supports(pageURL) ? "loading" : "empty",
@@ -543,6 +639,7 @@ export class CaptureOverlay {
   }
   close() {
     this.closed = true;
+    this.draft?.qualities?.close();
     this.controller?.abort();
     if (this.timer) clearTimeout(this.timer);
     if (this.hideTimer) clearTimeout(this.hideTimer);
