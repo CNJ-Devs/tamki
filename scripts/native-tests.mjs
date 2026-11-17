@@ -7,6 +7,7 @@ import { releaseTarget, tarCommand } from "./release.mjs";
 
 const target = releaseTarget();
 let temporary;
+let desktop;
 try {
   let executable;
   if (process.argv[2] === "packaged") {
@@ -49,11 +50,30 @@ try {
         }
       : {}),
   };
+  if (process.platform === "linux") {
+    desktop = await mkdtemp(path.join(tmpdir(), "tamki-test-desktop-"));
+    Object.assign(env, {
+      XDG_DATA_HOME: desktop,
+      XDG_RUNTIME_DIR: desktop,
+      XDG_CURRENT_DESKTOP: "GNOME",
+    });
+  }
   for (const test of ["browser", "capture-browser"]) {
     const args = [process.execPath, `tests/${test}.mjs`];
     execFileSync(
-      process.platform === "linux" ? "xvfb-run" : process.execPath,
-      process.platform === "linux" ? ["-a", ...args] : args.slice(1),
+      process.platform === "linux" ? "dbus-run-session" : process.execPath,
+      process.platform === "linux"
+        ? [
+            "--",
+            "xvfb-run",
+            "-a",
+            "bash",
+            "-c",
+            'printf %s tamki-fixture-keyring | gnome-keyring-daemon --unlock --components=secrets; exec "$@"',
+            "tamki-test-keyring",
+            ...args,
+          ]
+        : args.slice(1),
       { env, stdio: "inherit", timeout: 240000 },
     );
   }
@@ -61,6 +81,13 @@ try {
     `Passed ${target.id} ${executable ? "extracted package" : "source"} browser, playback, download and persistence checks.`,
   );
 } finally {
+  if (desktop)
+    await rm(desktop, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 200,
+    });
   if (temporary)
     await rm(temporary, {
       recursive: true,

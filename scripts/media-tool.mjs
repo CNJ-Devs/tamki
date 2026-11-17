@@ -34,6 +34,8 @@ export async function prepareMediaTool(destination) {
         ...flags,
         "--target-os=mingw32",
         "--arch=x86_64",
+        "--enable-cross-compile",
+        "--cc=gcc",
         "--extra-ldflags=-static",
       ]
     : flags;
@@ -87,24 +89,41 @@ export async function prepareMediaTool(destination) {
         throw new Error(
           "Windows builds require MSYS2 UCRT64; set TAMKI_MSYS2_BASH to its usr/bin/bash.exe",
         );
-      execFileSync(
-        process.env.TAMKI_MSYS2_BASH,
-        [
-          "-lc",
-          'cd "$(cygpath -u "$TAMKI_FFMPEG_SOURCE")" && ./configure "$@" && make -j2',
-          "ffmpeg-build",
-          ...buildFlags,
-        ],
-        {
-          env: {
-            ...process.env,
-            MSYSTEM: "UCRT64",
-            CHERE_INVOKING: "1",
-            TAMKI_FFMPEG_SOURCE: source,
+      const run = (command, args, timeout) =>
+        execFileSync(
+          process.env.TAMKI_MSYS2_BASH,
+          [
+            "-lc",
+            'cd "$(cygpath -u "$TAMKI_FFMPEG_SOURCE")" && ' + command,
+            "ffmpeg-build",
+            ...args,
+          ],
+          {
+            env: {
+              ...process.env,
+              MSYSTEM: "UCRT64",
+              CHERE_INVOKING: "1",
+              TAMKI_FFMPEG_SOURCE: source,
+            },
+            stdio: "inherit",
+            timeout,
           },
-          stdio: "inherit",
-        },
-      );
+        );
+      try {
+        // Avoid executing configure probes in the MSYS2 host. The resulting
+        // Windows binary is executed by version checks and real mux tests below.
+        run('./configure "$@"', buildFlags, 180000);
+        run("make -j4", [], 900000);
+      } catch (error) {
+        if (process.env.CI === "true") {
+          await mkdir("test-results", { recursive: true });
+          await cp(
+            path.join(source, "ffbuild/config.log"),
+            "test-results/ffmpeg-config.log",
+          ).catch(() => {});
+        }
+        throw error;
+      }
     } else {
       execFileSync("./configure", buildFlags, {
         cwd: source,
@@ -116,6 +135,7 @@ export async function prepareMediaTool(destination) {
   }
   const configuration = execFileSync(executable, ["-version"], {
     encoding: "utf8",
+    timeout: 20000,
   });
   if (
     configuration.includes("--enable-nonfree") ||
@@ -163,6 +183,6 @@ export async function prepareMediaTool(destination) {
   await writeFile(
     path.join(destination, "FFMPEG-BUILD.txt"),
     configuration +
-      `\nSource: https://ffmpeg.org/releases/ffmpeg-${version}.tar.xz\nSHA256: ${sha256}\nBuild: ./configure ${buildFlags.join(" ")} && make -j2\n`,
+      `\nSource: https://ffmpeg.org/releases/ffmpeg-${version}.tar.xz\nSHA256: ${sha256}\nBuild: ./configure ${buildFlags.join(" ")} && make -j${windows ? 4 : 2}\n`,
   );
 }
