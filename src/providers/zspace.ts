@@ -167,6 +167,7 @@ export class ZSpaceCLI {
     private executable: string,
     private home: string,
     private allowLANHTTP: (profile: string) => boolean = () => false,
+    private prefixArgs: readonly string[] = [],
   ) {}
   private async child(profile: string, args: string[]) {
     if (!/^[a-zA-Z0-9-]{1,64}$/.test(profile))
@@ -175,6 +176,7 @@ export class ZSpaceCLI {
     const child = spawn(
       this.executable,
       [
+        ...this.prefixArgs,
         "--profile",
         profile,
         "--credential-store",

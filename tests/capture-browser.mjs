@@ -120,8 +120,16 @@ async function settlePanel(page) {
 }
 try {
   app = await electron.launch({
-    executablePath: process.env.TAMKI_CAPTURE_EXECUTABLE,
-    args: process.env.TAMKI_CAPTURE_EXECUTABLE ? [] : ["."],
+    chromiumSandbox: true,
+    executablePath:
+      process.env.TAMKI_CAPTURE_EXECUTABLE ||
+      process.env.TAMKI_TEST_ELECTRON_EXECUTABLE,
+    args: [
+      ...(process.env.TAMKI_TEST_PASSWORD_STORE
+        ? [`--password-store=${process.env.TAMKI_TEST_PASSWORD_STORE}`]
+        : []),
+      ...(process.env.TAMKI_CAPTURE_EXECUTABLE ? [] : ["."]),
+    ],
     env: {
       ...process.env,
       TAMKI_TEST_PROFILE: profile,
@@ -130,6 +138,10 @@ try {
     timeout: 30000,
   });
   const shell = await app.firstWindow();
+  if (process.env.TAMKI_TEST_SHOW_WINDOW === "1")
+    await app.evaluate(({ BaseWindow }) =>
+      BaseWindow.getAllWindows()[0].showInactive(),
+    );
   shell.on("pageerror", (e) => errors.push(e.message));
   await shell.waitForFunction(() => window.tamki);
   await shell.locator(".page-header").waitFor();
@@ -500,7 +512,9 @@ try {
   assert.equal(state.works.length, 1);
   assert.equal(state.works[0].episodes.length, 2);
   for (const item of state.videoDownloads[0].items) {
-    assert(item.path.startsWith(destination + "/Fixture series/"));
+    assert(
+      item.path.startsWith(path.join(destination, "Fixture series") + path.sep),
+    );
     execFileSync(ffmpeg, [
       "-hide_banner",
       "-loglevel",

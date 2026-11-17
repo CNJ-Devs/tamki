@@ -176,7 +176,9 @@ function Shell({ state }: { state: LibraryState }) {
   const act = useCallback(
     async (type: string, value?: unknown) => {
       try {
-        setError("");
+        // Suggestion layout/selection refreshes may arrive after a rejected
+        // navigation. Keep its error visible until input or another action.
+        if (type !== "address-suggest" && type !== "address-step") setError("");
         const b = await window.tamki.action(type, value);
         setBrowser(b);
         return b;
@@ -577,6 +579,7 @@ function Shell({ state }: { state: LibraryState }) {
                   placeholder={t("address")}
                   value={address}
                   onChange={(e) => {
+                    setError("");
                     setAddress(e.target.value);
                     suggest(e.target.value);
                   }}

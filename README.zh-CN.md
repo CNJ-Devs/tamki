@@ -119,7 +119,7 @@ B 站下载任务会持久化已有的作品名称、简介、标签、海报来
 
 识别规则对照了 [yt-dlp 的 B 站提取器](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/bilibili.py)和 [BBDownNext 的元信息提取器](https://github.com/KaiHuaDou/BBDownNext/tree/22bbd1d192ce3b03974b49e237b714d4db5a51a0/BBDown.Core/Fetcher)，只作为调研参考，没有新增运行时依赖。合成测试覆盖资料页/嵌入播放器入口、BV 到番剧跳转、附加分区、当前集/分 P 定位、分页总数变化、不完整列表、系列下载与试看拒绝。
 
-macOS/Linux 安装包包含从固定校验和的官方源码编译的精简 FFmpeg 8.0.1（LGPL 2.1+），只启用本地文件协议。首次构建需要 C 编译器、make、curl 和 tar，之后复用 `.cache`。Windows 使用 `ffmpeg-static` 的对应平台程序，并在构建时拒绝不可再分发的配置。参见[第三方声明](THIRD-PARTY-NOTICES.md)。`npm run test:capture` 验证隔离捕获流程；`TAMKI_BACKGROUND_TEST=1 npm run test:browser` 在隐藏窗口中执行浏览器回归。
+macOS/Linux 安装包包含从固定校验和的官方源码编译的精简 FFmpeg 8.0.1（LGPL 2.1+），只启用本地文件协议。首次构建需要 C 编译器、make、curl 和 tar，之后复用 `.cache`。Windows 同样使用固定校验和的 LGPL 源码，经 MSYS2 UCRT64 静态编译；`ffmpeg-static` 仅用于生成和校验测试媒体。参见[第三方声明](THIRD-PARTY-NOTICES.md)。`npm run test:capture` 验证隔离捕获流程；`TAMKI_BACKGROUND_TEST=1 npm run test:browser` 在隐藏窗口中执行浏览器回归。
 
 ### 连接存储
 
@@ -163,15 +163,17 @@ npm run package
 
 集成测试使用本地 HTTP 页面、生成的 WebM 样片及临时配置，覆盖浏览器隔离、系统目录授权、扫描层级、识别/比较/取消、编辑、媒体范围读取、播放、响应式控件和重启恢复，不使用真实账号。打包命令在 `packages/` 下生成当前平台的开发包，没有 Developer ID 签名或 Apple 公证。
 
-此公开仓库使用 GitHub 标准托管 runner 自动发布。版本号与更新日志合入 `main` 后，推送对应的 `v<package-version>` tag。Release 工作流会确认 tag 属于已合并历史，执行检查，构建 macOS Apple Silicon 安装包并验证内容，然后发布 ZIP 和 SHA-256 校验文件。带预发布后缀的 tag 会标记为预发布。也可输入已有 tag 手动重试；已经完成发布的版本会予以保留。其他平台安装包及签名／公证尚未接入自动化。
+此公开仓库使用 GitHub 标准托管 runner 自动发布。版本号与更新日志合入 `main` 后，推送对应的 `v<package-version>` tag。macOS arm64、Windows x64、Linux x64 分别运行单元测试和源码版浏览器／播放／下载集成测试，再解压各自安装包，用临时配置和本地 HTTP 样例重复测试包内程序。Windows ZIP 解压后运行 `Tamki.exe`；Linux tar.gz 解压后运行 `Tamki`，面向兼容 Ubuntu 22.04 的 x64 桌面环境（glibc 2.35+）。Linux 需要 Electron 的图形／音频系统库及可用的 Chromium 沙箱；若发行版要求 setuid helper，需将解压后的 `chrome-sandbox` 配置为 root 所有、权限 4755。CI 仅在一次性 runner 内设置，不关闭沙箱。Windows 使用 MSYS2 UCRT64 编译内置媒体工具，`TAMKI_MSYS2_BASH` 指向其 `usr/bin/bash.exe`；Linux 通过 Xvfb 运行界面测试。窗口交互、硬件编解码、真实存储及付费账号流程仍需要实机验收。
+
+Release 工作流校验 tag、版本号、已合并历史，以及三个平台安装包的提交号和校验值，再统一发布三个包及一份 SHA-256 校验文件。缺少任一平台或构建失败都会阻止发布。预发布后缀会标记为预览版。已有 tag 可手动重试；已公开的安装包会予以保留。Developer ID 签名／公证、Windows 签名／安装程序和 Linux 桌面安装器尚未自动化。
 
 只检查来源编辑器时，先运行一次 `npx playwright install chromium --only-shell`，再运行 `npm run test:sources`。该检查使用无窗口浏览器和模拟 IPC，不打开桌面窗口、不访问账号。OAuth 协议和设置服务测试包含在 `npm test` 中，不启动 Electron。`npm run test:organization` 使用无窗口浏览器检查整理预览、选择、取消、响应式布局和合集删除。`npm run test:ai-connections` 使用无窗口浏览器检查独立连接区域、各类型配置、不选模型保存、取消及响应式弹窗。
 
-本地在 macOS Apple Silicon 上验证。源码保留 Windows 和 Linux 的运行路径，但尚未完成这两个系统的原生运行验证。
+本地验收在 macOS Apple Silicon 上进行。Windows x64 和 Linux x64 的原生验证使用上述托管 runner 自动化样例，不能覆盖所有桌面环境、GPU 或真实账号。
 
 ## 浏览器能力边界
 
-远程网页禁用 Node 集成，不加载应用 preload，并启用沙箱与上下文隔离。本地界面通过有限 IPC 接口操作浏览器，主进程校验调用来源。网页导航限于 HTTP(S)。开发中的浏览器更新按网站来源询问受支持的权限；跨域嵌入请求和未支持的能力仍然拒绝。网站设置提供权限管理及指定网站的数据清理。这批更新尚未测试或打包。
+远程网页禁用 Node 集成，不加载应用 preload，并启用沙箱与上下文隔离。本地界面通过有限 IPC 接口操作浏览器，主进程校验调用来源。网页导航限于 HTTP(S)。开发中的浏览器更新按网站来源询问受支持的权限；跨域嵌入请求和未支持的能力仍然拒绝。网站设置提供权限管理及指定网站的数据清理。本地 HTTP 浏览器样例覆盖权限隔离，真实网站兼容性仍需验收。
 
 密码管理、浏览器账号同步、扩展安装和自动更新尚未实现。Electron 只支持部分 Chrome 扩展 API，不能承诺通用 Chrome 商店兼容。当前播放范围取决于 Chromium 支持的容器和编码。外挂字幕、多音轨选择、转码与 DRM 尚未实现。小窗目前位于可信应用界面内，不能覆盖原生远程网页视图。媒体编码与 DRM 兼容需单独验证。参见 [Electron 扩展文档](https://www.electronjs.org/docs/latest/api/extensions)和[安全建议](https://www.electronjs.org/docs/latest/tutorial/security)。
 

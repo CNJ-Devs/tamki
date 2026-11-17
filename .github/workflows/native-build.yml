@@ -1,0 +1,106 @@
+name: Native builds and tests
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        required: false
+        default: ""
+        type: string
+    outputs:
+      tag:
+        value: ${{ jobs.build.outputs.tag }}
+      prerelease:
+        value: ${{ jobs.build.outputs.prerelease }}
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: macos-arm64
+          - runner: windows-2022
+            target: windows-x64
+          - runner: ubuntu-22.04
+            target: linux-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAMKI_BACKGROUND_TEST: "1"
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    outputs:
+      tag: ${{ steps.archive.outputs.tag }}
+      prerelease: ${{ steps.archive.outputs.prerelease }}
+    steps:
+      - if: runner.os == 'Windows'
+        run: git config --global core.autocrlf input
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc make diffutils tar xz
+      - if: runner.os == 'Windows'
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: echo "TAMKI_MSYS2_BASH=$MSYS2_LOCATION/usr/bin/bash.exe" >> "$GITHUB_ENV"
+      - run: npm ci
+      - if: runner.os == 'Linux'
+        run: |
+          npx playwright install-deps chromium
+          sudo apt-get install --no-install-recommends -y gnome-keyring dbus-x11 libsecret-1-0
+      - if: inputs.release_tag != ''
+        run: node scripts/release.mjs verify "$RELEASE_TAG"
+      - uses: actions/cache/restore@v4
+        id: media-cache
+        with:
+          path: .cache/ffmpeg-8.0.1
+          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/media-tool.mjs') }}
+      - run: npm run check
+      - uses: actions/cache/save@v4
+        if: steps.media-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/ffmpeg-8.0.1
+          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/media-tool.mjs') }}
+      - run: npm test
+      - run: npm run test:release
+      - name: Source integration tests
+        run: node scripts/native-tests.mjs
+      - run: node scripts/package.mjs
+      - name: Verify package and prepare archive
+        id: archive
+        run: |
+          if [ -n "$RELEASE_TAG" ]; then
+            node scripts/release.mjs archive "$RELEASE_TAG"
+          else
+            node scripts/release.mjs candidate
+          fi
+      - name: Extract archive and test packaged application
+        run: node scripts/native-tests.mjs packaged
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.release_tag != '' && 'release' || 'candidate' }}-${{ matrix.target }}
+          path: ${{ steps.archive.outputs.directory }}/*
+          if-no-files-found: error
+          retention-days: 1
+      - name: Save fixture diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ matrix.target }}
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 1

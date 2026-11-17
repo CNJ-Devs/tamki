@@ -54,7 +54,7 @@ SOFTWARE.
 
 Tamki invokes FFmpeg as a separate executable for local audio/video remuxing. It does not link FFmpeg libraries into Electron.
 
-## macOS and Linux
+## macOS, Windows and Linux
 
 The bundled remuxer is built from unmodified FFmpeg 8.0.1, copyright the FFmpeg developers, under LGPL 2.1 or later. Its minimal build disables external libraries, GPL/nonfree features and networking. Only the file protocol and the media formats needed by the adapter are enabled.
 
@@ -65,17 +65,15 @@ The bundled remuxer is built from unmodified FFmpeg 8.0.1, copyright the FFmpeg 
 
 The executable, LGPL license, upstream license notes, complete unmodified source archive and exact build recipe/configuration are distributed together in `dist/tools` (inside `app.asar.unpacked` for packaged applications). Users can rebuild and replace this separate executable. There are no FFmpeg source patches.
 
-## Windows and development test fixtures
+## Development test fixtures
 
-The `ffmpeg-static` npm wrapper is GPL 3.0 or later. Its platform binaries have their own FFmpeg configuration and license. The Windows build copies the binary license, wrapper license, upstream README and actual configuration alongside the executable and refuses a build containing `--enable-nonfree`. The relevant binary and source distribution is https://github.com/eugeneware/ffmpeg-static/releases/tag/b6.1.1. Windows packaging has not been validated in this macOS development session.
-
-The npm development binary generates and verifies synthetic test media; it is not the executable included in macOS/Linux packages. Other npm dependencies retain their respective licenses.
+The `ffmpeg-static` npm wrapper is GPL 3.0 or later. Its platform binaries have their own FFmpeg configuration and license. These development binaries generate and verify synthetic test media and are not included in application bundles. Windows packages use the same checksum-pinned upstream LGPL source as macOS/Linux, compiled with MSYS2 UCRT64 and static linkage; the source archive and exact recipe/configuration are included alongside the executable.
 
 # 第三方媒体工具
 
-Tamki 通过独立进程调用 FFmpeg 合并本地音视频，不将 FFmpeg 库链接进 Electron。macOS/Linux 使用未修改的 FFmpeg 8.0.1 官方源码构建，遵循 LGPL 2.1 或更新版本，关闭外部库、GPL/nonfree 特性与联网能力。完整源码、许可证、构建方法和配置与程序一起放在安装包的 `dist/tools` 中；用户可重新编译并替换该独立程序。
+Tamki 通过独立进程调用 FFmpeg 合并本地音视频，不将 FFmpeg 库链接进 Electron。三个平台均从校验和锁定的 FFmpeg 8.0.1 官方源码构建，遵循 LGPL 2.1 或更新版本，关闭外部库、GPL/nonfree 特性与联网能力。Windows 使用 MSYS2 UCRT64 静态编译。完整源码、许可证、构建方法和配置与程序一起放在安装包的 `dist/tools` 中；用户可重新编译并替换该独立程序。
 
-Windows 使用 `ffmpeg-static` 对应平台程序，保留二进制及包装器许可信息，并拒绝包含 `--enable-nonfree` 的构建。本次 macOS 开发未验证 Windows 打包。npm 开发依赖中的媒体程序只用于生成和检查测试媒体，不随 macOS/Linux 安装包分发。源码地址、校验和与具体构建方法见上方。
+`ffmpeg-static` 的开发程序只用于生成和检查测试媒体，不随安装包分发。源码地址、校验和与具体构建方法见上方。
 
 ## dash.js
 

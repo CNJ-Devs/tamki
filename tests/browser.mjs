@@ -1,3 +1,4 @@
+import { waitForAsync } from "./wait.mjs";
 import { _electron as electron } from "playwright";
 import { createServer } from "node:http";
 import {
@@ -210,10 +211,33 @@ const base = `http://127.0.0.1:${server.address().port}`;
 let app, shell;
 let thumbnailEvidence;
 const errors = [];
+let stage = "launch";
+const mark = (value) => console.log(`Browser fixture: ${(stage = value)}`);
+// Keep evidence even if an IPC evaluation hangs and the outer runner kills us.
+const evidenceTimer = setInterval(() => {
+  cp(
+    path.join(profile, "logs/runtime.log"),
+    "test-results/fixture-runtime.log",
+  ).catch(() => {});
+}, 5000);
+evidenceTimer.unref();
+const deadline = setTimeout(() => {
+  console.error(`Browser fixture exceeded its deadline during: ${stage}`);
+  app?.process().kill();
+}, 210000);
+deadline.unref();
 async function launch() {
   app = await electron.launch({
-    args: process.env.TAMKI_PACKAGED_EXECUTABLE ? [] : ["."],
-    executablePath: process.env.TAMKI_PACKAGED_EXECUTABLE,
+    chromiumSandbox: true,
+    args: [
+      ...(process.env.TAMKI_TEST_PASSWORD_STORE
+        ? [`--password-store=${process.env.TAMKI_TEST_PASSWORD_STORE}`]
+        : []),
+      ...(process.env.TAMKI_PACKAGED_EXECUTABLE ? [] : ["."]),
+    ],
+    executablePath:
+      process.env.TAMKI_PACKAGED_EXECUTABLE ||
+      process.env.TAMKI_TEST_ELECTRON_EXECUTABLE,
     env: { ...process.env, TAMKI_TEST_PROFILE: profile },
     timeout: 30000,
   });
@@ -222,6 +246,24 @@ async function launch() {
       errors.push(d.toString());
   });
   shell = await app.firstWindow();
+  // Map CI desktop windows so Chromium keeps submitting compositor frames and
+  // does not throttle animation/actionability checks in a hidden Windows window.
+  if (process.env.TAMKI_TEST_SHOW_WINDOW === "1")
+    await app.evaluate(({ BaseWindow }) =>
+      BaseWindow.getAllWindows()[0].showInactive(),
+    );
+  if (process.platform === "linux") {
+    const storage = await app.evaluate(({ safeStorage, app }) => ({
+      available: safeStorage.isEncryptionAvailable(),
+      backend: safeStorage.getSelectedStorageBackend(),
+      requested: app.commandLine.getSwitchValue("password-store"),
+      sandboxDisabled: app.commandLine.hasSwitch("no-sandbox"),
+    }));
+    console.log("Linux encrypted credential storage:", storage);
+    assert.equal(storage.available, true);
+    assert.notEqual(storage.backend, "basic_text");
+    assert.equal(storage.sandboxDisabled, false);
+  }
   // Answer native permission prompts inside the fixture, without displaying
   // system dialogs or waiting for interaction on the user's desktop.
   await app.evaluate(({ dialog }) => {
@@ -541,6 +583,10 @@ try {
   const current = await waitForPage(
     (p) => !previousTargets.has(p) && p.url() === base + "/two",
   );
+  await current.waitForLoadState("load");
+  // Filling a DOM input alone does not transfer native WebContentsView focus
+  // from the newly opened remote tab. Click as a user would before typing.
+  await shell.locator("#address").click();
   await shell.locator("#address").fill("file:///etc/passwd");
   await shell.locator("#address").press("Enter");
   assert.match(
@@ -562,7 +608,7 @@ try {
     file,
   );
   await current.getByRole("link", { name: "Download", exact: true }).click();
-  await shell.waitForFunction(async () =>
+  await waitForAsync(shell, async () =>
     (await window.tamki.library("state")).transfers.some(
       (t) => t.state === "completed",
     ),
@@ -580,6 +626,7 @@ try {
   await shell.getByRole("button", { name: "Home", exact: true }).click();
   await shell.getByRole("button", { name: "Settings", exact: true }).click();
   await shell.screenshot({ path: "test-results/settings.png" });
+  mark("storage connections");
   await checkConnections(app, shell, temporary);
   await app.evaluate(({ dialog }, root) => {
     dialog.showOpenDialog = async () => ({
@@ -606,11 +653,11 @@ try {
   await shell.getByRole("listbox").waitFor({ state: "hidden" });
   await shell.screenshot({ path: "test-results/scan-depth.png" });
   await shell.getByRole("button", { name: "Save", exact: true }).click();
-  await shell.waitForFunction(async () => {
+  await waitForAsync(shell, async () => {
     const s = await window.tamki.library("state");
     return !s.refreshing && s.works.length === 2;
   });
-  await shell.waitForFunction(async () =>
+  await waitForAsync(shell, async () =>
     (await window.tamki.library("state")).works.every((w) =>
       w.episodes.every((e) => e.duration > 0),
     ),
@@ -621,6 +668,7 @@ try {
     2,
   );
   assert(!snapshot.works.some((w) => w.title.includes("Hidden")));
+  mark("settings");
   await checkSettings(app, shell, base, profile);
   await shell.getByRole("button", { name: "Back", exact: true }).click();
   assert.equal(
@@ -656,7 +704,9 @@ try {
   await shell
     .getByRole("button", { name: "Organize information", exact: true })
     .click();
+  mark("recognition");
   await checkRecognition(app, shell);
+  mark("manual episode editing");
   await shell.getByLabel("Name", { exact: true }).fill("Edited series");
   await shell
     .getByLabel("Synopsis", { exact: true })
@@ -676,6 +726,7 @@ try {
   snapshot = await state();
   const series = snapshot.works.find((w) => w.title === "Edited series");
   assert.equal(series.episodes[0].number, "Special 1");
+  mark("local playback");
   await shell.getByRole("button", { name: "Play", exact: true }).click();
   const video = shell.locator(".player video");
   await shell.waitForFunction(() => {
@@ -683,6 +734,7 @@ try {
     return v?.readyState >= 2 && v.duration > 0 && !v.paused;
   });
   // The custom media protocol serves real bytes and obeys Range; arbitrary files cannot be requested.
+  mark("media range and invalid-ticket requests");
   const mediaChecks = await shell.evaluate(async (id) => {
     const url = await window.tamki.library("media", id);
     const good = await fetch(url, { headers: { Range: "bytes=10-19" } });
@@ -699,6 +751,7 @@ try {
   assert.equal(mediaChecks[1], 10);
   assert.match(mediaChecks[2], /^bytes 10-19\//);
   assert.equal(mediaChecks[3], 403);
+  mark("mini player and picture in picture");
   await video.evaluate((v) => {
     v.pause();
     v.currentTime = 1.25;
@@ -809,7 +862,8 @@ try {
     2,
   );
   await shell.getByRole("button", { name: "Save", exact: true }).click();
-  await shell.waitForFunction(
+  await waitForAsync(
+    shell,
     async (id) =>
       (await window.tamki.library("state")).works.find((w) => w.id === id)
         .episodes.length === 3,
@@ -843,7 +897,8 @@ try {
       );
   }
   await shell.evaluate(() => window.tamki.library("refresh"));
-  await shell.waitForFunction(
+  await waitForAsync(
+    shell,
     async (folders) => {
       const state = await window.tamki.library("state");
       return (
@@ -884,14 +939,18 @@ try {
     batchFolders.map((name) => path.join(media, name)),
   );
   assert.equal(aiBatch.queued.length, 3);
-  await shell.waitForFunction(async (ids) => {
-    const state = await window.tamki.library("state");
-    return ids.every(
-      (id) =>
-        state.works.find((w) => w.id === id)?.recognition?.status ===
-        "complete",
-    );
-  }, aiBatch.ids);
+  await waitForAsync(
+    shell,
+    async (ids) => {
+      const state = await window.tamki.library("state");
+      return ids.every(
+        (id) =>
+          state.works.find((w) => w.id === id)?.recognition?.status ===
+          "complete",
+      );
+    },
+    aiBatch.ids,
+  );
   assert.equal(
     combinedMetadataRequests.length - beforeCombined,
     1,
@@ -918,6 +977,7 @@ try {
     "decoded file identities must remain within their own work",
   );
   await app.close();
+  mark("restart persistence");
   await launch();
   const restoredThumbnail = await shell.evaluate(
     (input) => window.tamki.library("thumbnail", { id: input.id }),
@@ -995,12 +1055,18 @@ try {
     "Passed Chromium isolation/navigation/downloads/native menus, real local scans, metadata and episode appending, media Range/playback, mini/PiP/fullscreen, narrow layout, theme/localization and restart persistence.",
   );
 } catch (e) {
+  const runtime = await readFile(path.join(profile, "logs/runtime.log")).catch(
+    () => null,
+  );
+  if (runtime) await writeFile("test-results/fixture-runtime.log", runtime);
   if (shell)
     await shell
       .screenshot({ path: "test-results/failure.png" })
       .catch(() => {});
   throw e;
 } finally {
+  clearInterval(evidenceTimer);
+  clearTimeout(deadline);
   await app?.close().catch(() => {});
   server.close();
   await rm(temporary, { recursive: true, force: true });

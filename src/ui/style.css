@@ -691,6 +691,7 @@ h3 {
 .tabstrip-space {
   flex: 1;
   min-width: 0;
+  height: 100%;
 }
 .tabstrip > [data-slot="button"]:last-child {
   width: 28px;
