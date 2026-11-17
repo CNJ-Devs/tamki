@@ -995,6 +995,10 @@ try {
     "Passed Chromium isolation/navigation/downloads/native menus, real local scans, metadata and episode appending, media Range/playback, mini/PiP/fullscreen, narrow layout, theme/localization and restart persistence.",
   );
 } catch (e) {
+  const runtime = await readFile(path.join(profile, "logs/runtime.log")).catch(
+    () => null,
+  );
+  if (runtime) await writeFile("test-results/fixture-runtime.log", runtime);
   if (shell)
     await shell
       .screenshot({ path: "test-results/failure.png" })

@@ -169,6 +169,8 @@ export async function checkAutomaticRecognition(app, shell, temporary, base) {
   const batchResult = await shell.evaluate(async (id) => {
     const state = await window.tamki.library("state");
     const work = state.works.find((w) => w.id === id);
+    if (!work.cover)
+      throw new Error(`Missing fixture batch artwork: ${JSON.stringify(work)}`);
     const image = await fetch(await window.tamki.library("cover", work.cover));
     return {
       work,
