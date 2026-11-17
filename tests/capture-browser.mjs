@@ -512,7 +512,9 @@ try {
   assert.equal(state.works.length, 1);
   assert.equal(state.works[0].episodes.length, 2);
   for (const item of state.videoDownloads[0].items) {
-    assert(item.path.startsWith(destination + "/Fixture series/"));
+    assert(
+      item.path.startsWith(path.join(destination, "Fixture series") + path.sep),
+    );
     execFileSync(ffmpeg, [
       "-hide_banner",
       "-loglevel",

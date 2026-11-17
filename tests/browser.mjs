@@ -583,6 +583,10 @@ try {
   const current = await waitForPage(
     (p) => !previousTargets.has(p) && p.url() === base + "/two",
   );
+  await current.waitForLoadState("load");
+  // Filling a DOM input alone does not transfer native WebContentsView focus
+  // from the newly opened remote tab. Click as a user would before typing.
+  await shell.locator("#address").click();
   await shell.locator("#address").fill("file:///etc/passwd");
   await shell.locator("#address").press("Enter");
   assert.match(
