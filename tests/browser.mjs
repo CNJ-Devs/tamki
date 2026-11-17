@@ -371,8 +371,16 @@ try {
       document.body.append(probe);
       const rail = getComputedStyle(probe).color;
       probe.remove();
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 1;
+      const context = canvas.getContext("2d");
+      context.fillStyle = getComputedStyle(
+        document.querySelector(".native-tab-picker"),
+      ).backgroundColor;
+      context.fillRect(0, 0, 1, 1);
       return {
         rail,
+        surface: [...context.getImageData(0, 0, 1, 1).data].slice(0, 3),
         shadow: content.boxShadow,
         filter: getComputedStyle(document.querySelector(".toolbar-panel"))
           .filter,
@@ -389,7 +397,7 @@ try {
           .find((wc) => wc.getURL().endsWith("/index.html"));
         const image = await wc.capturePage();
         const { width, height } = image.getSize();
-        const bitmap = image.getBitmap();
+        const bitmap = image.toBitmap({ scaleFactor: 1 });
         const pixels = [
           [1, Math.floor(height / 2)],
           [width - 2, Math.floor(height / 2)],
@@ -434,9 +442,11 @@ try {
         .map((value, i) => value * alpha + nativeRgb[i] * (1 - alpha));
       assert(
         composed.every(
-          (value, i) => value - rgb[i] <= 12 && rgb[i] - value < 20,
+          (value, i) =>
+            value <= Math.max(rgb[i], frame.surface[i]) + 12 &&
+            value > Math.min(rgb[i], frame.surface[i]) - 20,
         ),
-        `${JSON.stringify(appearance)}: corner ${composed} differs from frame ${rgb}`,
+        `${JSON.stringify(appearance)}: corner ${composed} differs from frame/menu palette`,
       );
     }
   }

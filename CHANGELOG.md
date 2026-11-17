@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.2
+
+- Build and publish macOS Apple Silicon releases through GitHub Actions when a matching version tag is pushed after merging to main. Standard hosted runners are used; no local build or manual binary upload is required.
+- Validate the release tag against package metadata and merged history, verify packaged assets and FFmpeg license/source files, and publish a ZIP with SHA-256 checksums only after tests pass.
+- Correct the browser screenshot regression check for menu surfaces and display scaling on hosted runners.
+
+This preview includes persistent browsing, Bilibili discovery/downloads, the indexed library/player and reviewed AI organization. Developer ID signing/notarization and additional platform binaries remain outside this release.
+
 ## 0.1.0-alpha.1
 
 First packaged preview of Tamki's browser, indexed media library and player.

@@ -1,6 +1,6 @@
 {
   "name": "tamki",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "private": true,
   "description": "A Chromium browser and a video library across your own storage.",
   "author": "CNJ-Devs",
@@ -14,6 +14,7 @@
     "start": "npm run build && electron .",
     "check": "tsc --noEmit && npm run build",
     "test": "node --import tsx --test tests/*.test.ts",
+    "test:release": "node --test tests/release.test.mjs",
     "test:sources": "npm run build && node tests/recognition-source-ui.mjs",
     "test:ai-connections": "npm run build && node tests/ai-connections-ui.mjs",
     "test:browser": "npm run build && node tests/browser.mjs",

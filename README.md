@@ -163,6 +163,8 @@ npm run package
 
 The integration suite uses local HTTP pages, a generated WebM fixture and temporary profiles. It covers browser isolation, native picker grants, scan depth, identification/comparison/cancellation, editing, media ranges, playback, responsive controls and restart persistence, without real accounts. Packaging writes a development bundle for the current platform to `packages/`; it has no Developer ID signing or Apple notarization.
 
+Release automation uses standard GitHub-hosted runners for this public repository. After merging a version/changelog update to `main`, push the matching `v<package-version>` tag. The Release workflow checks that the tag belongs to merged history, runs validation, builds the macOS Apple Silicon package, verifies its contents, and publishes a ZIP and SHA-256 checksums. Tags containing a prerelease suffix are marked as prereleases. The workflow can also be retried manually with an existing tag; completed published releases are preserved. Additional platform binaries and signing/notarization are not yet automated.
+
 For the source editor only, run `npx playwright install chromium --only-shell` once, then `npm run test:sources`. This uses a headless browser with mock IPC, without opening desktop windows or accessing an account. OAuth protocol and settings-service tests run under `npm test` without Electron. `npm run test:ai-connections` checks the independent connection section, provider-specific fields, saving without a model, cancellation and responsive dialogs in a headless browser.
 
 Validated locally on macOS Apple Silicon. Windows and Linux source paths are present, but native runtime behavior has not yet been validated there.

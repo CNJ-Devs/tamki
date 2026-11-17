@@ -163,6 +163,8 @@ npm run package
 
 集成测试使用本地 HTTP 页面、生成的 WebM 样片及临时配置，覆盖浏览器隔离、系统目录授权、扫描层级、识别/比较/取消、编辑、媒体范围读取、播放、响应式控件和重启恢复，不使用真实账号。打包命令在 `packages/` 下生成当前平台的开发包，没有 Developer ID 签名或 Apple 公证。
 
+此公开仓库使用 GitHub 标准托管 runner 自动发布。版本号与更新日志合入 `main` 后，推送对应的 `v<package-version>` tag。Release 工作流会确认 tag 属于已合并历史，执行检查，构建 macOS Apple Silicon 安装包并验证内容，然后发布 ZIP 和 SHA-256 校验文件。带预发布后缀的 tag 会标记为预发布。也可输入已有 tag 手动重试；已经完成发布的版本会予以保留。其他平台安装包及签名／公证尚未接入自动化。
+
 只检查来源编辑器时，先运行一次 `npx playwright install chromium --only-shell`，再运行 `npm run test:sources`。该检查使用无窗口浏览器和模拟 IPC，不打开桌面窗口、不访问账号。OAuth 协议和设置服务测试包含在 `npm test` 中，不启动 Electron。`npm run test:organization` 使用无窗口浏览器检查整理预览、选择、取消、响应式布局和合集删除。`npm run test:ai-connections` 使用无窗口浏览器检查独立连接区域、各类型配置、不选模型保存、取消及响应式弹窗。
 
 本地在 macOS Apple Silicon 上验证。源码保留 Windows 和 Linux 的运行路径，但尚未完成这两个系统的原生运行验证。
