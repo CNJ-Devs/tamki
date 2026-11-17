@@ -106,7 +106,7 @@ export async function prepareArchive(tag, candidate = false) {
   releaseMetadata(metadata.tag, packaged.version);
   for (const file of await readdir("dist", { recursive: true })) {
     if (!/\.(cjs|js|css|html)$/.test(file)) continue;
-    const relative = `dist/${file.replaceAll(path.sep, "/")}`;
+    const relative = path.join("dist", file);
     if (
       !extractFile(archive, relative).equals(
         await readFile(path.join("dist", file)),
