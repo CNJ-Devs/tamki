@@ -156,7 +156,7 @@ export async function prepareMediaTool(destination) {
     const dependencies = execFileSync(
       path.join(msys, "ucrt64/bin/objdump.exe"),
       ["-p", executable],
-      { encoding: "utf8" },
+      { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 20000 },
     );
     if (/DLL Name:\s*(?:libgcc|libstdc\+\+|libwinpthread)/i.test(dependencies))
       throw new Error(

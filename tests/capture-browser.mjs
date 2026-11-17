@@ -138,6 +138,10 @@ try {
     timeout: 30000,
   });
   const shell = await app.firstWindow();
+  if (process.env.TAMKI_TEST_SHOW_WINDOW === "1")
+    await app.evaluate(({ BaseWindow }) =>
+      BaseWindow.getAllWindows()[0].showInactive(),
+    );
   shell.on("pageerror", (e) => errors.push(e.message));
   await shell.waitForFunction(() => window.tamki);
   await shell.locator(".page-header").waitFor();

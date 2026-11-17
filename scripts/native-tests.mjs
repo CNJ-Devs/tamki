@@ -57,6 +57,7 @@ try {
       XDG_RUNTIME_DIR: desktop,
       XDG_CURRENT_DESKTOP: "GNOME",
       TAMKI_TEST_PASSWORD_STORE: "gnome-libsecret",
+      TAMKI_TEST_SHOW_WINDOW: "1",
       // Playwright's injected source loader forces --password-store=basic.
       // Launch Electron directly, as packaged tests do, to test real encryption.
       TAMKI_TEST_ELECTRON_EXECUTABLE: createRequire(import.meta.url)(

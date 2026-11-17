@@ -231,6 +231,12 @@ async function launch() {
       errors.push(d.toString());
   });
   shell = await app.firstWindow();
+  // Xvfb is an isolated desktop. Map the window so Chromium keeps submitting
+  // compositor frames after switching native child views and taking screenshots.
+  if (process.env.TAMKI_TEST_SHOW_WINDOW === "1")
+    await app.evaluate(({ BaseWindow }) =>
+      BaseWindow.getAllWindows()[0].showInactive(),
+    );
   if (process.platform === "linux") {
     const storage = await app.evaluate(({ safeStorage, app }) => ({
       available: safeStorage.isEncryptionAvailable(),
