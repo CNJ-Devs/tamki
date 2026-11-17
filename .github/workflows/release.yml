@@ -1,0 +1,98 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build or retry
+        required: true
+        type: string
+
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      TAMKI_BACKGROUND_TEST: "1"
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Validate tag, version and merged source
+        id: version
+        run: node scripts/release.mjs verify "$RELEASE_TAG"
+      - uses: actions/cache@v4
+        with:
+          path: .cache/ffmpeg-8.0.1
+          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/media-tool.mjs') }}
+      - run: npm run check
+      - run: npm test
+      - run: npm run test:release
+      - run: node tests/browser.mjs
+      - run: node tests/capture-browser.mjs
+      - run: npm run package
+      - name: Verify packaged files, archive and checksum
+        id: archive
+        run: node scripts/release.mjs archive "$RELEASE_TAG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: ${{ steps.archive.outputs.directory }}/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.build.outputs.tag }}
+      PRERELEASE: ${{ needs.build.outputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: release-assets
+      - name: Verify transferred archive
+        working-directory: release-assets
+        run: sha256sum --check SHA256SUMS.txt
+      - name: Publish verified release assets
+        working-directory: release-assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft > release-state.txt 2> release-error.txt; then
+            if [ "$(cat release-state.txt)" = false ]; then
+              echo "This tag is already published; preserving its existing assets."
+              exit 0
+            fi
+          else
+            if ! grep -q 'release not found' release-error.txt; then
+              cat release-error.txt >&2
+              exit 1
+            fi
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Tamki $RELEASE_TAG" --notes-file release-notes.md
+          fi
+          gh release upload "$RELEASE_TAG" ./*.zip SHA256SUMS.txt --clobber
+          gh release edit "$RELEASE_TAG" --notes-file release-notes.md --prerelease="$PRERELEASE" --draft=false

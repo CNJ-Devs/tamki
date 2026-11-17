@@ -5,3 +5,5 @@ packages/
 *.log
 .env*
 test-results/
+
+.cache/
